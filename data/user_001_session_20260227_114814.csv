@@ -1,0 +1,1 @@
+timestamp,session_id,user_id,session_duration,ear,blink_count,blink_rate,gaze_x,gaze_y,gaze_deviation,head_pitch,head_yaw,head_roll,face_detected,luminance,light_variance,glare_detected,keystrokes_per_min,backspace_per_min,mouse_dist_per_min,clicks_per_min,strain_label

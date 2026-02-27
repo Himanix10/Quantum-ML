@@ -1,0 +1,19 @@
+{
+  "user_id": "user_001",
+  "created_at": "2026-02-27 12:02:51",
+  "total_sessions": 1,
+  "total_duration": 16,
+  "baseline_ear": null,
+  "baseline_blink": null,
+  "last_session": "2026-02-27 12:03:11",
+  "sessions": [
+    {
+      "session_id": "f0f21d49",
+      "date": "2026-02-27 12:02:55",
+      "duration": 16,
+      "avg_ear": 0.29,
+      "avg_blink": 0.5,
+      "blinks": 1
+    }
+  ]
+}
