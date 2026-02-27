@@ -3,8 +3,8 @@
   "created_at": "2026-02-27 12:02:51",
   "total_sessions": 1,
   "total_duration": 16,
-  "baseline_ear": null,
-  "baseline_blink": null,
+  "baseline_ear": 0.2941,
+  "baseline_blink": 9.39,
   "last_session": "2026-02-27 12:03:11",
   "sessions": [
     {
@@ -15,5 +15,25 @@
       "avg_blink": 0.5,
       "blinks": 1
     }
-  ]
+  ],
+  "baseline": {
+    "ear_mean": 0.2941,
+    "ear_std": 0.0559,
+    "ear_lower": 0.1824,
+    "blink_mean": 9.39,
+    "blink_std": 8.38,
+    "blink_lower": 0.0,
+    "gaze_mean": 1.0862,
+    "gaze_std": 1.0606,
+    "gaze_upper": 3.2074,
+    "pitch_mean": 3.7185,
+    "pitch_std": 3.7847,
+    "pitch_upper": 11.2879,
+    "lum_mean": 153.78,
+    "lum_std": 28.26,
+    "keys_mean": 59.19,
+    "keys_std": 51.24,
+    "computed_at": "2026-02-27 12:09:30",
+    "rows_used": 1299
+  }
 }
