@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 from data_logger import DataLogger
 from vfq_calculator import VFQCalculator
+from break_reminder import BreakReminderSystem
 
 
 class SessionManager:
@@ -20,6 +21,7 @@ class SessionManager:
         self.logger = None
         self.vfq_calculator = VFQCalculator(user_id=user_id)
         self.vfq_history = []
+        self.break_reminder = BreakReminderSystem()
 
     def _load_profile(self):
         if os.path.exists(self.profile_path):
@@ -58,7 +60,8 @@ class SessionManager:
             "avg_blink_rate": [],
             "strain_events":  0
         }
-
+        self.break_reminder = BreakReminderSystem()
+        self.break_reminder.start()
         self.logger = DataLogger(
             user_id=self.user_id,
             data_dir="../data"
@@ -69,7 +72,7 @@ class SessionManager:
         print(f"Session {self.logger.session_id} started.")
         print(f"Total sessions so far: {self.profile['total_sessions']}")
         return self.logger
-
+        
     def update_session(self, features):
         if self.current_session is None:
             return
@@ -84,6 +87,7 @@ class SessionManager:
 
     # Track VFQ history
         self.vfq_history.append(vfq)
+        self.break_reminder.update(vfq)
 
     # Log to CSV
         self.logger.log(features)
@@ -142,7 +146,7 @@ class SessionManager:
         else:
             self.current_session["avg_vfq"] = 0
             self.current_session["max_vfq"] = 0
-            self._save_profile()
+        self._save_profile()
 
         print(f"\nSession ended.")
         print(f"Duration:      {duration} seconds")
@@ -153,6 +157,8 @@ class SessionManager:
         print(f"Avg VFQ:       {self.current_session['avg_vfq']}")
         print(f"Max VFQ:       {self.current_session['max_vfq']}")
         self.current_session = None
+        self.break_reminder.stop()
+
 
     def get_profile_summary(self):
         return {
