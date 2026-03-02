@@ -44,6 +44,7 @@ class DataLogger:
             "backspace_per_min",
             "mouse_dist_per_min",
             "clicks_per_min",
+            "vfq_score",
             "strain_label"        # Will be auto-generated later
         ]
 
@@ -86,7 +87,8 @@ class DataLogger:
             "backspace_per_min":  features.get("backspace_per_min", ""),
             "mouse_dist_per_min": features.get("mouse_dist_per_min", ""),
             "clicks_per_min":     features.get("clicks_per_min", ""),
-            "strain_label":       ""
+            "vfq_score":          features.get("vfq_score", ""),
+            "strain_label":       features.get("strain_label", "")
         }
 
         with open(self.filepath, "a", newline="") as f:

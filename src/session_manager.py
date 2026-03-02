@@ -3,6 +3,7 @@ import json
 import time
 from datetime import datetime
 from data_logger import DataLogger
+from vfq_calculator import VFQCalculator
 
 
 class SessionManager:
@@ -17,6 +18,8 @@ class SessionManager:
         self.profile = self._load_profile()
         self.current_session = None
         self.logger = None
+        self.vfq_calculator = VFQCalculator(user_id=user_id)
+        self.vfq_history = []
 
     def _load_profile(self):
         if os.path.exists(self.profile_path):
@@ -71,17 +74,30 @@ class SessionManager:
         if self.current_session is None:
             return
 
-        # Log to CSV
+    # Compute VFQ score
+        vfq, components = self.vfq_calculator.compute(features)
+        level, color    = self.vfq_calculator.get_strain_level(vfq)
+
+    # Add VFQ to features before logging
+        features["vfq_score"]    = vfq
+        features["strain_label"] = level
+
+    # Track VFQ history
+        self.vfq_history.append(vfq)
+
+    # Log to CSV
         self.logger.log(features)
 
-        # Track running stats
+    # Track running stats
         if features.get("ear") is not None:
             self.current_session["avg_ear"].append(features["ear"])
         if features.get("blink_rate") is not None:
-            self.current_session["avg_blink_rate"].append(features["blink_rate"])
+            self.current_session["avg_blink_rate"].append(
+            features["blink_rate"])
         if features.get("blink_count") is not None:
             self.current_session["total_blinks"] = features["blink_count"]
 
+        return vfq, level
     def end_session(self, features=None):
         if self.current_session is None:
             return
@@ -119,8 +135,14 @@ class SessionManager:
             "avg_blink":   self.current_session["avg_blink_rate"],
             "blinks":      self.current_session["total_blinks"]
         })
-
-        self._save_profile()
+        # Add VFQ summary to session record
+        if self.vfq_history:
+            self.current_session["avg_vfq"] = round(sum(self.vfq_history) / len(self.vfq_history), 1)
+            self.current_session["max_vfq"] = round(max(self.vfq_history), 1)
+        else:
+            self.current_session["avg_vfq"] = 0
+            self.current_session["max_vfq"] = 0
+            self._save_profile()
 
         print(f"\nSession ended.")
         print(f"Duration:      {duration} seconds")
@@ -128,7 +150,8 @@ class SessionManager:
         print(f"Avg EAR:       {self.current_session['avg_ear']}")
         print(f"Avg blink rate:{self.current_session['avg_blink_rate']}/min")
         print(f"Profile saved: {self.profile_path}")
-
+        print(f"Avg VFQ:       {self.current_session['avg_vfq']}")
+        print(f"Max VFQ:       {self.current_session['max_vfq']}")
         self.current_session = None
 
     def get_profile_summary(self):
@@ -161,15 +184,30 @@ if __name__ == "__main__":
                 break
 
             frame, features = pipeline.process_frame(frame)
-            manager.update_session(features)
+            result = manager.update_session(features)
 
-            cv2.putText(frame,
-                        f"Session {manager.profile['total_sessions']} | "
-                        f"Rows: {manager.logger.get_row_count()}",
-                        (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                        (0, 255, 0), 2)
+            if result:
+                vfq, level = result
+                color_map = {
+                    "NORMAL":   (0, 255, 0),
+                    "LOW":      (0, 255, 128),
+                    "MODERATE": (0, 165, 255),
+                    "HIGH":     (0, 0, 255),
+                    "SEVERE":   (0, 0, 180)
+                }
+                color = color_map.get(level, (255, 255, 255))
 
-            cv2.imshow("Session Manager", frame)
+                cv2.putText(frame,
+                            f"VFQ: {vfq:.1f} — {level}",
+                            (20, 40), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.9, color, 2)
+                cv2.putText(frame,
+                            f"Session {manager.profile['total_sessions']} | "
+                            f"Rows: {manager.logger.get_row_count()}",
+                            (20, 75), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.65, (200, 200, 200), 1)
+
+            cv2.imshow("EyeStrain Monitor", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
