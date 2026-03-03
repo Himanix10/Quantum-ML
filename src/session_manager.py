@@ -5,7 +5,7 @@ from datetime import datetime
 from data_logger import DataLogger
 from vfq_calculator import VFQCalculator
 from break_reminder import BreakReminderSystem
-
+from strain_tracker import StrainTracker
 
 class SessionManager:
     def __init__(self, user_id="user_001", profile_dir="../data/profiles"):
@@ -22,7 +22,7 @@ class SessionManager:
         self.vfq_calculator = VFQCalculator(user_id=user_id)
         self.vfq_history = []
         self.break_reminder = BreakReminderSystem()
-
+        self.strain_tracker = StrainTracker()
     def _load_profile(self):
         if os.path.exists(self.profile_path):
             with open(self.profile_path, "r") as f:
@@ -88,7 +88,9 @@ class SessionManager:
     # Track VFQ history
         self.vfq_history.append(vfq)
         self.break_reminder.update(vfq)
-
+        self.strain_tracker.update(vfq)
+        trend = self.strain_tracker.get_trend()
+        features["strain_trend"] = trend  # adds trend to CSV too
     # Log to CSV
         self.logger.log(features)
 
@@ -146,8 +148,10 @@ class SessionManager:
         else:
             self.current_session["avg_vfq"] = 0
             self.current_session["max_vfq"] = 0
+        
+        summary = self.strain_tracker.get_session_summary()
+        self.current_session["high_strain_pct"] = summary.get("high_strain_pct", 0)
         self._save_profile()
-
         print(f"\nSession ended.")
         print(f"Duration:      {duration} seconds")
         print(f"Total blinks:  {self.current_session['total_blinks']}")
@@ -156,6 +160,8 @@ class SessionManager:
         print(f"Profile saved: {self.profile_path}")
         print(f"Avg VFQ:       {self.current_session['avg_vfq']}")
         print(f"Max VFQ:       {self.current_session['max_vfq']}")
+        print(f"High Strain %: {self.current_session['high_strain_pct']}%")  # ADD HERE
+
         self.current_session = None
         self.break_reminder.stop()
 
