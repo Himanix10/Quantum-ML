@@ -1,11 +1,11 @@
 {
   "user_id": "user_001",
   "created_at": "2026-02-27 12:02:51",
-  "total_sessions": 6,
-  "total_duration": 1304,
+  "total_sessions": 8,
+  "total_duration": 3256,
   "baseline_ear": 0.2941,
   "baseline_blink": 9.39,
-  "last_session": "2026-03-03 12:33:09",
+  "last_session": "2026-03-03 16:34:46",
   "sessions": [
     {
       "session_id": "f0f21d49",
@@ -54,6 +54,22 @@
       "avg_ear": 0.309,
       "avg_blink": 3.7,
       "blinks": 8
+    },
+    {
+      "session_id": "d74f9cc6",
+      "date": "2026-03-03 16:00:03",
+      "duration": 113,
+      "avg_ear": 0.304,
+      "avg_blink": 7.2,
+      "blinks": 19
+    },
+    {
+      "session_id": "814d11f2",
+      "date": "2026-03-03 16:03:05",
+      "duration": 1839,
+      "avg_ear": 0.31,
+      "avg_blink": 2.7,
+      "blinks": 79
     }
   ],
   "baseline": {
