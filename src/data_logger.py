@@ -45,7 +45,8 @@ class DataLogger:
             "mouse_dist_per_min",
             "clicks_per_min",
             "vfq_score",
-            "strain_label"        # Will be auto-generated later
+            "strain_label",
+            "strain_trend" # Will be auto-generated later
         ]
 
         # Write header
@@ -88,7 +89,8 @@ class DataLogger:
             "mouse_dist_per_min": features.get("mouse_dist_per_min", ""),
             "clicks_per_min":     features.get("clicks_per_min", ""),
             "vfq_score":          features.get("vfq_score", ""),
-            "strain_label":       features.get("strain_label", "")
+            "strain_label":       features.get("strain_label", ""),
+            "strain_trend":       features.get("strain_trend", "")
         }
 
         with open(self.filepath, "a", newline="") as f:
