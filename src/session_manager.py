@@ -117,9 +117,10 @@ class SessionManager:
 
         # Calculate averages
         if self.current_session["avg_ear"]:
+            valid_ear = [e for e in self.current_session["avg_ear"] 
+                if e is not None and e != float('inf') and e == e]  # filters inf and NaN
             self.current_session["avg_ear"] = round(
-                sum(self.current_session["avg_ear"]) /
-                len(self.current_session["avg_ear"]), 3)
+                sum(valid_ear) / len(valid_ear), 3) if valid_ear else None
         else:
             self.current_session["avg_ear"] = None
 
