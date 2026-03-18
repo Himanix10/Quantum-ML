@@ -1,0 +1,360 @@
+"""
+data_loader.py
+Teammate 3 — Data Pipeline
+Converts train_engineered.csv and test_engineered.csv into
+sliding window NumPy tensors ready for TCN training.
+
+Output shape: (N, 60, 23)
+              N = number of windows
+              60 = seconds per window
+              23 = feature columns
+
+Also computes class_weights.json for handling label imbalance.
+RandomOverSampler + SMOTE applied to training set only.
+"""
+
+import numpy as np
+import pandas as pd
+import json
+import os
+from collections import Counter
+from sklearn.utils.class_weight import compute_class_weight
+
+# ── CONFIG ──────────────────────────────────────────────────────────────────
+WINDOW_SIZE     = 60
+STEP_SIZE       = 1
+PROCESSED_DIR   = os.path.join(os.path.dirname(__file__), '..', 'data', 'processed')
+OUTPUT_DIR      = PROCESSED_DIR
+TRAIN_FILE      = os.path.join(PROCESSED_DIR, 'train_engineered.csv')
+TEST_FILE       = os.path.join(PROCESSED_DIR, 'test_engineered.csv')
+LOG_FILE        = os.path.join(PROCESSED_DIR, 'training_log.json')
+
+# These 23 columns are THE CONTRACT — never reorder or rename
+FEATURE_COLS = [
+    'ear', 'blink_rate', 'gaze_x', 'gaze_y', 'gaze_deviation',
+    'head_pitch', 'head_yaw', 'head_roll',
+    'luminance', 'light_variance', 'glare_detected',
+    'keystrokes_per_min', 'backspace_per_min',
+    'mouse_dist_per_min', 'clicks_per_min',
+    'session_duration',
+    'ear_roll_mean', 'ear_roll_std',
+    'blink_rate_roll_mean', 'blink_rate_roll_std',
+    'gaze_deviation_roll_mean', 'fatigue_progression',
+    'ear_trend'
+]
+
+LABEL_COL = 'strain_label_enc'
+LABEL_MAP = {0: 'NORMAL', 1: 'LOW', 2: 'MODERATE', 3: 'HIGH', 4: 'SEVERE'}
+
+
+# ── SLIDING WINDOW ───────────────────────────────────────────────────────────
+def make_windows(df, window_size=WINDOW_SIZE, step=STEP_SIZE):
+    """
+    Creates sliding windows from a dataframe.
+    CRITICAL: Never crosses session boundaries.
+    Label = strain_label_enc at the LAST row of each window.
+    """
+    X_windows = []
+    y_labels  = []
+
+    for session_id, session_df in df.groupby('session_id'):
+        session_df = session_df.reset_index(drop=True)
+
+        if len(session_df) < window_size:
+            print(f"  [SKIP] Session {session_id} — only {len(session_df)} rows, need {window_size}")
+            continue
+
+        features = session_df[FEATURE_COLS].apply(pd.to_numeric, errors='coerce').values.astype(np.float32)
+        labels   = session_df[LABEL_COL].values
+
+        count = 0
+        for start in range(0, len(session_df) - window_size + 1, step):
+            end     = start + window_size
+            window  = features[start:end]
+            label   = labels[end - 1]
+
+            if np.isnan(window).any():
+                continue
+
+            X_windows.append(window)
+            y_labels.append(label)
+            count += 1
+
+        print(f"  [OK] Session {session_id} — {len(session_df)} rows → {count} windows")
+
+    if len(X_windows) == 0:
+        raise ValueError("No valid windows created. Check your data.")
+
+    return np.array(X_windows, dtype=np.float32), np.array(y_labels, dtype=np.int64)
+
+
+# ── OVERSAMPLING ─────────────────────────────────────────────────────────────
+def apply_smote(X, y):
+    """
+    Step 1 — RandomOverSampler brings all classes to at least 10 samples.
+             Works even with 1 sample. Just duplicates existing rows.
+    Step 2 — SMOTE then interpolates minority classes up to MODERATE level.
+             Now safe because all classes have >= 10 samples after Step 1.
+    ONLY called on training data — never on test data.
+    """
+    try:
+        from imblearn.over_sampling import SMOTE, RandomOverSampler
+    except ImportError:
+        print("  [WARNING] imbalanced-learn not installed. Skipping.")
+        print("  Run: pip install imbalanced-learn --break-system-packages")
+        return X, y
+
+    print("\n  Class distribution BEFORE oversampling:")
+    for label, count in sorted(Counter(y).items()):
+        print(f"    {LABEL_MAP.get(label, label)}: {count} windows")
+
+    N, T, F = X.shape
+    X_flat  = X.reshape(N, T * F)
+    counts  = Counter(y)
+
+    # ── Step 1: RandomOverSampler ──
+    # Bring every class up to at least 10 so SMOTE has enough neighbors
+    min_for_smote = 10
+    ros_strategy  = {
+        label: max(count, min_for_smote)
+        for label, count in counts.items()
+    }
+
+    ros          = RandomOverSampler(sampling_strategy=ros_strategy, random_state=42)
+    X_ros, y_ros = ros.fit_resample(X_flat, y)
+
+    print("\n  Class distribution AFTER RandomOverSampler:")
+    for label, count in sorted(Counter(y_ros).items()):
+        print(f"    {LABEL_MAP.get(label, label)}: {count} windows")
+
+    # ── Step 2: SMOTE ──
+    # Bring MODERATE, HIGH, SEVERE up to match MODERATE count
+    counts_ros     = Counter(y_ros)
+    moderate_count = counts_ros.get(2, 300)
+
+    smote_strategy = {
+        label: max(count, moderate_count)
+        for label, count in counts_ros.items()
+        if label in [2, 3, 4]
+    }
+
+    if smote_strategy:
+        sm             = SMOTE(
+            sampling_strategy=smote_strategy,
+            random_state=42,
+            k_neighbors=5
+        )
+        X_final, y_final = sm.fit_resample(X_ros, y_ros)
+    else:
+        print("  [INFO] SMOTE strategy empty — using RandomOverSampler result only.")
+        X_final, y_final = X_ros, y_ros
+
+    X_final = X_final.reshape(-1, T, F)
+
+    print("\n  Class distribution AFTER SMOTE:")
+    for label, count in sorted(Counter(y_final).items()):
+        print(f"    {LABEL_MAP.get(label, label)}: {count} windows")
+
+    return X_final.astype(np.float32), y_final.astype(np.int64)
+
+
+# ── CLASS WEIGHTS ────────────────────────────────────────────────────────────
+def compute_and_save_class_weights(y_train):
+    """
+    Computes class weights inversely proportional to class frequency.
+    Saves to data/processed/class_weights.json.
+    """
+    classes = np.unique(y_train)
+    weights = compute_class_weight(
+        class_weight='balanced',
+        classes=classes,
+        y=y_train
+    )
+
+    weight_dict = {
+        int(cls): float(round(w, 4))
+        for cls, w in zip(classes, weights)
+    }
+
+    weight_dict_named = {
+        LABEL_MAP.get(k, str(k)): v
+        for k, v in weight_dict.items()
+    }
+
+    output = {
+        "class_weights_by_index": weight_dict,
+        "class_weights_by_name":  weight_dict_named,
+        "note": "Use class_weights_by_index when passing to PyTorch loss function"
+    }
+
+    path = os.path.join(OUTPUT_DIR, 'class_weights.json')
+    with open(path, 'w') as f:
+        json.dump(output, f, indent=2)
+
+    print(f"\n  Class weights saved → {path}")
+    for name, w in weight_dict_named.items():
+        print(f"    {name}: {w}")
+
+    return weight_dict
+
+
+# ── TRAINING LOG ─────────────────────────────────────────────────────────────
+def update_training_log(stats):
+    """
+    Appends a run entry to training_log.json.
+    Tracks dataset stats across pipeline runs.
+    """
+    log = []
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, 'r') as f:
+            try:
+                log = json.load(f)
+            except json.JSONDecodeError:
+                log = []
+
+    log.append(stats)
+
+    with open(LOG_FILE, 'w') as f:
+        json.dump(log, f, indent=2)
+
+    print(f"\n  Training log updated → {LOG_FILE}")
+
+
+# ── VALIDATOR ────────────────────────────────────────────────────────────────
+def validate_outputs(X_train, y_train, X_test, y_test):
+    """
+    9 health checks before saving tensors.
+    Raises AssertionError if any check fails.
+    """
+    print("\n── Validation ──────────────────────────────────────────────")
+
+    checks = []
+
+    assert X_train.ndim == 3 and X_train.shape[1] == WINDOW_SIZE and X_train.shape[2] == len(FEATURE_COLS), \
+        f"X_train shape wrong: {X_train.shape}"
+    checks.append("✓ X_train shape correct (N, 60, 23)")
+
+    assert X_test.ndim == 3 and X_test.shape[1] == WINDOW_SIZE and X_test.shape[2] == len(FEATURE_COLS), \
+        f"X_test shape wrong: {X_test.shape}"
+    checks.append("✓ X_test shape correct (N, 60, 23)")
+
+    assert len(X_train) == len(y_train), "X_train and y_train length mismatch"
+    checks.append("✓ X_train and y_train lengths match")
+
+    assert len(X_test) == len(y_test), "X_test and y_test length mismatch"
+    checks.append("✓ X_test and y_test lengths match")
+
+    assert not np.isnan(X_train).any(), "NaN found in X_train"
+    checks.append("✓ No NaN in X_train")
+
+    assert not np.isnan(X_test).any(), "NaN found in X_test"
+    checks.append("✓ No NaN in X_test")
+
+    assert not np.isinf(X_train).any(), "Inf found in X_train"
+    assert not np.isinf(X_test).any(), "Inf found in X_test"
+    checks.append("✓ No Inf values in train or test")
+
+    assert set(np.unique(y_train)).issubset({0, 1, 2, 3, 4}), \
+        f"Unexpected labels in y_train: {np.unique(y_train)}"
+    checks.append("✓ Labels in valid range 0–4")
+
+    assert len(X_test) > 0, "X_test is empty"
+    checks.append("✓ Test set is not empty")
+
+    assert len(X_train) > len(X_test), \
+        f"Train ({len(X_train)}) should be larger than test ({len(X_test)})"
+    checks.append("✓ Train set larger than test set")
+
+    for c in checks:
+        print(f"  {c}")
+
+    print("── All 9 checks passed ─────────────────────────────────────\n")
+
+
+# ── MAIN ─────────────────────────────────────────────────────────────────────
+def main():
+    print("=" * 60)
+    print("  data_loader.py — EyeStrain AI")
+    print("=" * 60)
+
+    # ── Load CSVs ──
+    print("\n[1] Loading engineered CSVs...")
+    train_df = pd.read_csv(TRAIN_FILE)
+    test_df  = pd.read_csv(TEST_FILE)
+    print(f"  Train: {len(train_df)} rows across {train_df['session_id'].nunique()} sessions")
+    print(f"  Test:  {len(test_df)} rows across {test_df['session_id'].nunique()} sessions")
+
+    # ── Verify columns ──
+    missing_train = [c for c in FEATURE_COLS + [LABEL_COL] if c not in train_df.columns]
+    missing_test  = [c for c in FEATURE_COLS + [LABEL_COL] if c not in test_df.columns]
+    if missing_train:
+        raise ValueError(f"Missing columns in train CSV: {missing_train}")
+    if missing_test:
+        raise ValueError(f"Missing columns in test CSV: {missing_test}")
+    print("  All 23 feature columns confirmed present")
+
+    # ── Sliding windows ──
+    print("\n[2] Creating sliding windows (train)...")
+    X_train_raw, y_train_raw = make_windows(train_df)
+    print(f"\n  Raw train windows: {X_train_raw.shape}")
+
+    print("\n[3] Creating sliding windows (test)...")
+    X_test, y_test = make_windows(test_df)
+    print(f"\n  Test windows: {X_test.shape}")
+
+    # ── Oversample train only ──
+    print("\n[4] Applying oversampling to training set...")
+    X_train, y_train = apply_smote(X_train_raw, y_train_raw)
+    print(f"\n  Final train windows after oversampling: {X_train.shape}")
+
+    # ── Validate ──
+    print("\n[5] Validating outputs...")
+    validate_outputs(X_train, y_train, X_test, y_test)
+
+    # ── Class weights ──
+    print("[6] Computing class weights...")
+    class_weights = compute_and_save_class_weights(y_train)
+
+    # ── Save tensors ──
+    print("[7] Saving NumPy tensors...")
+    np.save(os.path.join(OUTPUT_DIR, 'X_train.npy'), X_train)
+    np.save(os.path.join(OUTPUT_DIR, 'y_train.npy'), y_train)
+    np.save(os.path.join(OUTPUT_DIR, 'X_test.npy'),  X_test)
+    np.save(os.path.join(OUTPUT_DIR, 'y_test.npy'),  y_test)
+    print(f"  Saved X_train.npy — {X_train.shape}")
+    print(f"  Saved y_train.npy — {y_train.shape}")
+    print(f"  Saved X_test.npy  — {X_test.shape}")
+    print(f"  Saved y_test.npy  — {y_test.shape}")
+
+    # ── Training log ──
+    print("\n[8] Updating training log...")
+    update_training_log({
+        "run_date": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "train_rows_raw": len(train_df),
+        "test_rows_raw": len(test_df),
+        "train_windows_before_smote": int(X_train_raw.shape[0]),
+        "train_windows_after_smote":  int(X_train.shape[0]),
+        "test_windows":               int(X_test.shape[0]),
+        "window_size":                WINDOW_SIZE,
+        "feature_count":              len(FEATURE_COLS),
+        "class_distribution_train": {
+            LABEL_MAP.get(k, str(k)): int(v)
+            for k, v in sorted(Counter(y_train.tolist()).items())
+        },
+        "class_distribution_test": {
+            LABEL_MAP.get(k, str(k)): int(v)
+            for k, v in sorted(Counter(y_test.tolist()).items())
+        },
+        "class_weights":  class_weights,
+        "smote_applied":  True
+    })
+
+    print("\n" + "=" * 60)
+    print("  data_loader.py complete.")
+    print(f"  X_train: {X_train.shape}  y_train: {y_train.shape}")
+    print(f"  X_test:  {X_test.shape}   y_test:  {y_test.shape}")
+    print("=" * 60)
+
+
+if __name__ == '__main__':
+    main()

@@ -22,7 +22,7 @@ class DataPreprocessor:
     """
 
     def __init__(self, data_dir="../data", output_dir="../data/processed"):
-        self.data_dir   = data_dir
+        self.data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
 
