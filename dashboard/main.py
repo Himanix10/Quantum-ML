@@ -344,8 +344,10 @@ class RecoveryPopup(QDialog):
         self.vfq_at_trigger  = vfq_at_trigger
         self._selected_action = None
         self.setWindowTitle("Break Time")
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
-                            Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowFlags(
+            Qt.WindowType.Dialog |
+            Qt.WindowType.WindowStaysOnTopHint
+        )
         self.setFixedWidth(400)
         self.setStyleSheet(f"""
             QDialog {{
@@ -416,8 +418,8 @@ class RecoveryPopup(QDialog):
 class RewardPopup(QDialog):
     def __init__(self, points, total, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
-                            Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint |
+                            Qt.WindowType.Dialog)
         self.setFixedSize(320, 220)
         self.setStyleSheet(f"""
             QDialog {{
@@ -1367,8 +1369,13 @@ class SettingsScreen(QWidget):
 class Dashboard(QMainWindow):
 
     # Signal emitted when Start/Stop pressed in real pipeline mode
-    session_start_requested = pyqtSignal()
-    session_stop_requested  = pyqtSignal()
+    session_start_requested  = pyqtSignal()
+    session_stop_requested   = pyqtSignal()
+    pipeline_data_received   = pyqtSignal(dict)
+    tcn_prediction_received  = pyqtSignal(str, list)
+    reward_received          = pyqtSignal(int, int, float)
+    verification_failed      = pyqtSignal()
+    break_reminder_triggered = pyqtSignal(float)
 
     def __init__(self, session_manager=None):
         super().__init__()
@@ -1466,6 +1473,13 @@ class Dashboard(QMainWindow):
         self.stack.addWidget(self.screen_reports)
         self.stack.addWidget(self.screen_settings)
         root.addWidget(self.stack)
+
+        # Wire thread-safe signals to main-thread slots
+        self.pipeline_data_received.connect(self._on_pipeline_data)
+        self.tcn_prediction_received.connect(self._on_tcn_prediction)
+        self.reward_received.connect(self._on_reward)
+        self.verification_failed.connect(self._on_verification_failed)
+        self.break_reminder_triggered.connect(self._on_break_reminder)
 
     def _style_session_btn(self, active):
         if active:
@@ -1579,16 +1593,11 @@ class Dashboard(QMainWindow):
         self._check_break_reminder(vfq)
 
     def _check_break_reminder(self, vfq):
+        # Break reminder is now handled by BreakReminderSystem background thread
+        # which calls trigger_break_reminder() via callback.
+        # Only handle mock-mode verification here.
         if self._break_cooldown > 0:
             self._break_cooldown -= 1
-
-        if (not self._break_pending and
-                self._break_cooldown == 0 and
-                len(self._vfq_buffer) >= 300 and
-                sum(self._vfq_buffer[-300:]) / 300 > 40):
-            self._break_pending  = True
-            self._vfq_at_trigger = vfq
-            self._fire_break_reminder()
 
         if self._verifying:
             self._verify_countdown -= 1
@@ -1597,11 +1606,23 @@ class Dashboard(QMainWindow):
                 if self._vfq_at_trigger - vfq >= 20:
                     self._reward_points += 10
                     self.screen_live.update_rewards(self._reward_points)
-                    rw = RewardPopup(10, self._reward_points, self)
-                    rw.exec()
+                    self._on_reward(10, self._reward_points,
+                                    self._vfq_at_trigger - vfq)
+
+    def trigger_break_reminder(self, vfq: float):
+        """Called from BreakReminderSystem background thread — emit to main thread."""
+        self.break_reminder_triggered.emit(vfq)
+
+    def _on_break_reminder(self, vfq: float):
+        """Called from background thread via signal — safe on main thread."""
+        self._vfq_at_trigger = vfq
+        self._break_pending  = False
+        self._fire_break_reminder()
 
     def _fire_break_reminder(self):
-        popup  = RecoveryPopup(self._vfq_at_trigger, self)
+        popup = RecoveryPopup(self._vfq_at_trigger, self)
+        popup.raise_()
+        popup.activateWindow()
         result = popup.exec()
         self._break_pending  = False
         self._break_cooldown = 600
@@ -1623,10 +1644,14 @@ class Dashboard(QMainWindow):
                 self.session_manager.reward_system.on_break_skipped()
 
     def update_from_pipeline(self, data: dict):
-        """Called by session_manager every second with real features."""
-        if not self._session_active:
-            return
+        """
+        Called from background thread — must NOT touch widgets directly.
+        Emits signal so main thread handles the UI update safely.
+        """
+        self.pipeline_data_received.emit(data)
 
+    def _on_pipeline_data(self, data: dict):
+        """Runs on main thread — safe to update widgets."""
         vfq   = data.get('vfq_score', 0)
         blink = data.get('blink_rate', 0)
         trend = data.get('strain_trend', 'STABLE')
@@ -1641,18 +1666,25 @@ class Dashboard(QMainWindow):
         self.screen_live.chart.add_point(vfq)
 
     def update_tcn_prediction(self, label, probs):
-        """Forward TCN prediction to live screen."""
+        self.tcn_prediction_received.emit(label, list(probs))
+
+    def _on_tcn_prediction(self, label: str, probs: list):
+        """Runs on main thread."""
         self.screen_live.update_tcn_prediction(label, probs)
 
     def show_reward(self, points, total, drop):
-        """Called by session_manager when camera verifies recovery."""
+        self.reward_received.emit(int(points), int(total), float(drop))
+
+    def _on_reward(self, points: int, total: int, drop: float):
         self._reward_points = total
         self.screen_live.update_rewards(total)
         rw = RewardPopup(points, total, self)
         rw.exec()
 
     def show_verification_failed(self):
-        """Called when verification window expires without VFQ drop."""
+        self.verification_failed.emit()
+
+    def _on_verification_failed(self):
         from PyQt6.QtWidgets import QMessageBox
         msg = QMessageBox(self)
         msg.setWindowTitle("Verification Failed")

@@ -8,6 +8,7 @@ from vfq_calculator import VFQCalculator
 from break_reminder import BreakReminderSystem
 from strain_tracker import StrainTracker
 from reward_system import RewardSystem
+from personalization import PersonalizationEngine
 
 
 class SessionManager:
@@ -40,6 +41,10 @@ class SessionManager:
         self.break_reminder  = BreakReminderSystem()
         self.strain_tracker  = StrainTracker()
         self.reward_system   = RewardSystem(user_id=user_id)
+
+        self.personalization          = PersonalizationEngine(user_id=user_id)
+        self.personalization.fit()
+        self._context_check_interval  = 0
 
         # Load TCN model for live inference
         self.tcn_model       = None
@@ -150,6 +155,15 @@ class SessionManager:
         self.break_reminder = BreakReminderSystem()
         self.break_reminder.start()
 
+        # Wire break reminder to dashboard — must be after start()
+        if self.dashboard is not None:
+            self.break_reminder.set_dashboard_callback(
+                lambda vfq: self.dashboard.trigger_break_reminder(vfq)
+            )
+            print("[SessionManager] Break reminder wired to dashboard.")
+        else:
+            print("[SessionManager] WARNING — dashboard is None, break reminder callback NOT wired.")
+
         self.logger = DataLogger(user_id=self.user_id, data_dir="../data")
         self.current_session["session_id"] = self.logger.session_id
 
@@ -159,15 +173,16 @@ class SessionManager:
         return self.logger
 
     def update_session(self, features):
+        # ── Guard — must be first line ──
+        if self.current_session is None:
+            return None
+
         # Send to dashboard if wired
         if self.dashboard is not None:
             try:
                 self.dashboard.update_from_pipeline(features)
             except Exception:
                 pass
-
-        if self.current_session is None:
-            return None
 
         # Compute VFQ
         vfq, components  = self.vfq_calculator.compute(features)
@@ -232,6 +247,31 @@ class SessionManager:
         blink_count = features.get("blink_count")
         if blink_count is not None:
             self.current_session["total_blinks"] = blink_count
+
+        # Re-check context every 5 minutes
+        self._context_check_interval += 1
+        if self._context_check_interval >= 300:
+            self._context_check_interval = 0
+            current_feats = {
+                'avg_vfq':        np.mean(self.vfq_history[-300:])
+                                  if len(self.vfq_history) >= 300
+                                  else np.mean(self.vfq_history)
+                                  if self.vfq_history else 0,
+                'max_vfq':        max(self.vfq_history) if self.vfq_history else 0,
+                'high_pct':       sum(1 for v in self.vfq_history if v >= 60)
+                                  / max(len(self.vfq_history), 1) * 100,
+                'vfq_slope':      0,
+                'avg_blink':      features.get('blink_rate', 0),
+                'duration_min':   self.current_session['duration'] / 60
+                                  if self.current_session else 0,
+                'hour_of_day':    datetime.now().hour,
+                'avg_keystrokes': features.get('keystrokes_per_min', 0),
+            }
+            thresholds = self.personalization.predict_context(current_feats)
+            # Update break reminder threshold dynamically
+            # Update thresholds on the break reminder config dataclass
+            self.break_reminder.config.vfq_threshold = thresholds['break_trigger_vfq']
+            self.break_reminder.config.sustained_duration_sec = thresholds['break_trigger_duration']
 
         return vfq, level
 
@@ -303,6 +343,9 @@ class SessionManager:
               f"({reward_summary['session_recoveries']} recoveries)")
         print(f"Total all-time:    {reward_summary['total_points']} pts")
 
+        # Refit personalization with new session data
+        self.personalization.fit()
+
         self.current_session = None
         self.break_reminder.stop()
 
@@ -321,7 +364,6 @@ if __name__ == "__main__":
     import cv2
     from pipeline import UnifiedPipeline
 
-    # ── Check if dashboard mode requested ──
     use_dashboard = "--dashboard" in sys.argv
 
     manager  = SessionManager(user_id="user_001")
@@ -332,84 +374,82 @@ if __name__ == "__main__":
         print("ERROR: Could not open webcam.")
         exit(1)
 
-    # ── Start dashboard if requested ──
     if use_dashboard:
+        # ── Dashboard mode ──
+        # PyQt6 runs on main thread
+        # Pipeline runs on background thread
+        # OpenCV imshow is DISABLED — dashboard shows everything
         import threading
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
         from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtCore import QTimer
         from dashboard.main import Dashboard
 
-        qt_app  = QApplication(sys.argv)
-        dash    = Dashboard(session_manager=manager)
+        qt_app = QApplication(sys.argv)
+        dash   = Dashboard(session_manager=manager)
         manager.dashboard = dash
-        dash.show()
-        # Wire dashboard Start/Stop buttons to pipeline
+
+        # Wire Start/Stop signals
         def on_start_requested():
             if not manager.current_session:
                 manager.start_session()
+                print("Session started from dashboard.")
 
         def on_stop_requested():
             if manager.current_session:
                 manager.end_session()
+                print("Session stopped from dashboard.")
 
         dash.session_start_requested.connect(on_start_requested)
         dash.session_stop_requested.connect(on_stop_requested)
+        dash.show()
 
-        # Run pipeline in background thread
+        # Pipeline runs in background thread — no cv2.imshow
+        pipeline_running = threading.Event()
+        pipeline_running.set()
+
         def pipeline_loop():
-            print("\nStarting session. Press Q in webcam window to end.")
-            print(f"Profile summary: {manager.get_profile_summary()}\n")
-            manager.start_session()
-            try:
-                while True:
+            print("\nPipeline running. Use dashboard to start/stop session.")
+            print("Close dashboard window to exit.\n")
+            while pipeline_running.is_set():
+                try:
                     ret, frame = cap.read()
                     if not ret:
-                        print("WARNING: Could not read frame.")
                         break
 
                     frame, features = pipeline.process_frame(frame)
-                    result          = manager.update_session(features)
 
-                    if result:
-                        vfq, level = result
-                        color_map  = {
-                            "NORMAL":   (0, 255, 0),
-                            "LOW":      (0, 255, 128),
-                            "MODERATE": (0, 165, 255),
-                            "HIGH":     (0, 0, 255),
-                            "SEVERE":   (0, 0, 180)
-                        }
-                        color = color_map.get(level, (255, 255, 255))
-                        cv2.putText(frame,
-                                    f"VFQ: {vfq:.1f} — {level}",
-                                    (20, 40),
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.9, color, 2)
-                        cv2.putText(frame,
-                                    f"Rows: {manager.logger.get_row_count()}",
-                                    (20, 75),
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.65, (200, 200, 200), 1)
+                    if manager.current_session is not None:
+                        manager.update_session(features)
 
-                    cv2.imshow("EyeStrain Monitor", frame)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        break
+                except RuntimeError as e:
+                    if "shutdown" in str(e).lower():
+                        break  # MediaPipe shutting down — exit cleanly
+                    print(f"[Pipeline] RuntimeError: {e}")
+                    break
+                except Exception as e:
+                    print(f"[Pipeline] error: {e}")
+                    continue
 
-            except Exception as e:
-                print(f"Pipeline error: {e}")
-            finally:
-                manager.end_session()
-                pipeline.stop()
-                cap.release()
-                cv2.destroyAllWindows()
-                qt_app.quit()
+            cap.release()
+            pipeline.stop()
+            print("Pipeline stopped.")
 
         thread = threading.Thread(target=pipeline_loop, daemon=True)
         thread.start()
+
+        # When dashboard window closes — stop pipeline
+        def on_app_quit():
+            pipeline_running.clear()
+            if manager.current_session:
+                manager.end_session()
+
+        qt_app.aboutToQuit.connect(on_app_quit)
+
         sys.exit(qt_app.exec())
 
-    # ── Standalone mode (no dashboard) ──
     else:
+        # ── Standalone mode — webcam window only ──
         print("\nStarting session. Press Q to end.")
         print(f"Profile summary: {manager.get_profile_summary()}\n")
         manager.start_session()

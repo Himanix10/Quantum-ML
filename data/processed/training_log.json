@@ -1427,5 +1427,36 @@
         "macro_f1": 0.204
       }
     ]
+  },
+  {
+    "run_date": "2026-03-22 11:59:04",
+    "train_rows_raw": 13494,
+    "test_rows_raw": 2426,
+    "train_windows_before_smote": 13022,
+    "train_windows_after_smote": 14476,
+    "test_windows": 2367,
+    "window_size": 60,
+    "feature_count": 23,
+    "class_distribution_train": {
+      "NORMAL": 6162,
+      "LOW": 6088,
+      "MODERATE": 742,
+      "HIGH": 742,
+      "SEVERE": 742
+    },
+    "class_distribution_test": {
+      "NORMAL": 857,
+      "LOW": 1233,
+      "MODERATE": 263,
+      "HIGH": 14
+    },
+    "class_weights": {
+      "0": 0.4698,
+      "1": 0.4756,
+      "2": 3.9019,
+      "3": 3.9019,
+      "4": 3.9019
+    },
+    "smote_applied": true
   }
 ]

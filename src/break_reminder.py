@@ -49,6 +49,7 @@ class BreakReminderSystem:
         # Stats for logging
         self.total_reminders_sent: int = 0
         self.last_trigger_vfq_avg: float = 0.0
+        self._dashboard_callback = None
 
     def update(self, vfq_score: float) -> None:
         """Call this every second with the latest VFQ score."""
@@ -62,27 +63,29 @@ class BreakReminderSystem:
 
     def _check_sustained_strain(self) -> bool:
         """
-        Returns True if VFQ has been continuously above threshold
-        for at least sustained_duration_sec.
+        Returns True if the average VFQ over the last
+        sustained_duration_sec has been above threshold.
+        Uses average instead of requiring every single second
+        to be above threshold — handles natural VFQ fluctuation.
         """
         now = time.time()
         with self._lock:
             if not self._buffer:
                 return False
-            
-            # Walk backward from most recent, find contiguous high-strain window
-            sustained_start = None
-            for ts, vfq in reversed(self._buffer):
-                if vfq > self.config.vfq_threshold:
-                    sustained_start = ts
-                else:
-                    break  # Chain broken — not continuous
-            
-            if sustained_start is None:
+
+            # Get entries from the last sustained_duration_sec
+            cutoff  = now - self.config.sustained_duration_sec
+            recent  = [(ts, vfq) for ts, vfq in self._buffer
+                       if ts >= cutoff]
+
+            # Need at least half the window filled
+            min_entries = max(3, self.config.sustained_duration_sec / 2)
+            if len(recent) < min_entries:
                 return False
-            
-            duration = now - sustained_start
-            return duration >= self.config.sustained_duration_sec
+
+            # Average must be above threshold
+            avg_vfq = sum(v for _, v in recent) / len(recent)
+            return avg_vfq > self.config.vfq_threshold
 
     def _get_window_avg_vfq(self) -> float:
         """Average VFQ over the sustained window."""
@@ -99,41 +102,21 @@ class BreakReminderSystem:
         return elapsed >= self.config.cooldown_sec
 
     def _send_reminder(self, avg_vfq: float) -> None:
-        """Show a popup break reminder."""
         self.total_reminders_sent += 1
         self.last_trigger_vfq_avg = avg_vfq
         self._last_reminder_time = time.time()
-        
-        message = (
-            f"👁️  Eye Strain Alert!\n\n"
-            f"Your VFQ score has been HIGH for over 5 minutes.\n"
-            f"Average strain: {avg_vfq:.1f}/100\n\n"
-            f"Please take a 20-second break.\n"
-            f"Look at something 20 feet away. 🌿"
-        )
-        
-        print(f"\n[BREAK REMINDER] VFQ avg={avg_vfq:.1f} — Sending popup")
-        
-        # Platform-specific popup
-        os_name = platform.system()
-        try:
-            if os_name == "Windows":
-                import ctypes
-                ctypes.windll.user32.MessageBoxW(
-                    0, message, "EyeStrain — Break Time! 👁️", 0x40 | 0x1000
-                )
-            elif os_name == "Darwin":  # macOS
-                import subprocess
-                subprocess.run([
-                    "osascript", "-e",
-                    f'display notification "{message}" with title "EyeStrain Alert"'
-                ])
-            else:  # Linux
-                import subprocess
-                subprocess.run(["notify-send", "EyeStrain Alert", message])
-        except Exception as e:
-            # Fallback: print to console if popup fails
-            print(f"[BREAK REMINDER — POPUP FAILED: {e}]\n{message}")
+        print(f"\n[BREAK REMINDER] VFQ avg={avg_vfq:.1f} — firing")
+
+        # Call dashboard callback if wired
+        if hasattr(self, '_dashboard_callback') and self._dashboard_callback:
+            try:
+                self._dashboard_callback(avg_vfq)
+            except Exception as e:
+                print(f"[BreakReminder] Dashboard callback error: {e}")
+
+    def set_dashboard_callback(self, callback):
+        """Wire dashboard popup to fire when reminder triggers."""
+        self._dashboard_callback = callback
 
     def _monitor_loop(self) -> None:
         """Background thread: checks for sustained strain periodically."""
@@ -141,15 +124,17 @@ class BreakReminderSystem:
             time.sleep(self.config.check_interval_sec)
             if not self._running:
                 break
-            
-            if self._check_sustained_strain() and self._can_send_reminder():
-                avg_vfq = self._get_window_avg_vfq()
-                # Run popup in a separate thread so it doesn't block monitoring
-                threading.Thread(
-                    target=self._send_reminder,
-                    args=(avg_vfq,),
-                    daemon=True
-                ).start()
+
+            sustained = self._check_sustained_strain()
+            can_send  = self._can_send_reminder()
+            avg_vfq   = self._get_window_avg_vfq()
+
+            print(f"[BreakReminder] check — sustained={sustained} "
+                  f"can_send={can_send} avg_vfq={avg_vfq:.1f} "
+                  f"buffer_size={len(self._buffer)}")
+
+            if sustained and can_send:
+                self._send_reminder(avg_vfq)
 
     def start(self) -> None:
         """Start the background monitoring thread."""
