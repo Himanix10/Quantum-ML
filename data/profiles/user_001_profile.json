@@ -1,11 +1,11 @@
 {
   "user_id": "user_001",
   "created_at": "2026-02-27 12:02:51",
-  "total_sessions": 19,
+  "total_sessions": 21,
   "total_duration": 17128,
   "baseline_ear": 0.2941,
   "baseline_blink": 9.39,
-  "last_session": "2026-03-14 01:49:47",
+  "last_session": "2026-03-20 23:44:57",
   "sessions": [
     {
       "session_id": "f0f21d49",
@@ -134,6 +134,22 @@
       "avg_ear": 0.28,
       "avg_blink": 11.3,
       "blinks": 1263
+    },
+    {
+      "session_id": "ee1a878f",
+      "date": "2026-03-20 23:42:39",
+      "duration": 0,
+      "avg_ear": null,
+      "avg_blink": null,
+      "blinks": 0
+    },
+    {
+      "session_id": "72c44cd0",
+      "date": "2026-03-20 23:44:57",
+      "duration": 0,
+      "avg_ear": null,
+      "avg_blink": null,
+      "blinks": 0
     }
   ],
   "baseline": {

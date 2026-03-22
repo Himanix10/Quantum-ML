@@ -1,3 +1,4 @@
+import os
 import cv2
 import time
 from eye_features      import EyeFeatureExtractor
@@ -6,7 +7,9 @@ from behavioral_features import BehavioralFeatureExtractor
 
 
 class UnifiedPipeline:
-    def __init__(self, model_path="face_landmarker.task"):
+    def __init__(self, model_path=None):
+        if model_path is None:
+            model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'face_landmarker.task')
         print("Initializing pipeline...")
         self.eye_extractor  = EyeFeatureExtractor(model_path=model_path)
         self.env_extractor  = EnvironmentFeatureExtractor()

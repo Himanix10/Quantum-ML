@@ -1,17 +1,17 @@
 {
   "class_weights_by_index": {
-    "0": 0.6447,
-    "1": 0.3685,
-    "2": 4.0782,
-    "3": 4.0782,
-    "4": 4.0782
+    "0": 0.4698,
+    "1": 0.4756,
+    "2": 3.9019,
+    "3": 3.9019,
+    "4": 3.9019
   },
   "class_weights_by_name": {
-    "NORMAL": 0.6447,
-    "LOW": 0.3685,
-    "MODERATE": 4.0782,
-    "HIGH": 4.0782,
-    "SEVERE": 4.0782
+    "NORMAL": 0.4698,
+    "LOW": 0.4756,
+    "MODERATE": 3.9019,
+    "HIGH": 3.9019,
+    "SEVERE": 3.9019
   },
   "note": "Use class_weights_by_index when passing to PyTorch loss function"
 }
