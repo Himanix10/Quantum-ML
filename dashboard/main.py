@@ -70,6 +70,8 @@ def make_theme():
 
 T = make_theme()
 
+VERIFY_WINDOW_SECS = 300
+
 # ── STRAIN HELPERS ────────────────────────────────────────────────────────────
 def strain_color(vfq):
     if vfq < 20: return T['green']
@@ -339,7 +341,8 @@ class RecoveryPopup(QDialog):
 
     def __init__(self, vfq_at_trigger, parent=None):
         super().__init__(parent)
-        self.vfq_at_trigger = vfq_at_trigger
+        self.vfq_at_trigger  = vfq_at_trigger
+        self._selected_action = None
         self.setWindowTitle("Break Time")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
                             Qt.WindowType.WindowStaysOnTopHint)
@@ -405,6 +408,9 @@ class RecoveryPopup(QDialog):
     def _action_selected(self, action_name):
         self._selected_action = action_name
         self.accept()
+
+    def get_selected_action(self):
+        return self._selected_action
 
 
 class RewardPopup(QDialog):
@@ -490,6 +496,17 @@ class LiveScreen(QWidget):
         trend_row.addWidget(self.trend_label)
         trend_row.addStretch()
         gl.addLayout(trend_row)
+
+        # TCN prediction label
+        self.tcn_label_w = QLabel("🤖 Model: --")
+        self.tcn_label_w.setStyleSheet(
+            f"color:{T['text3']}; font-size:12px; font-weight:600;")
+        trend_row2 = QHBoxLayout()
+        trend_row2.addStretch()
+        trend_row2.addWidget(self.tcn_label_w)
+        trend_row2.addStretch()
+        gl.addLayout(trend_row2)
+
         top_row.addWidget(gauge_card)
 
         stats_widget = QWidget()
@@ -554,6 +571,22 @@ class LiveScreen(QWidget):
 
     def update_prevented(self, minutes):
         self.prevent_card.set_value(f"{minutes:.0f}", T['yellow'])
+
+    def update_tcn_prediction(self, label, probs):
+        """Show TCN model prediction alongside VFQ score."""
+        if not hasattr(self, 'tcn_label_w'):
+            return
+        self.tcn_label_w.setText(f"🤖 Model: {label}")
+        color = strain_color(
+            [0, 20, 40, 60, 80][
+                ['NORMAL', 'LOW', 'MODERATE', 'HIGH', 'SEVERE'].index(label)
+                if label in ['NORMAL', 'LOW', 'MODERATE', 'HIGH', 'SEVERE']
+                else 0
+            ]
+        )
+        self.tcn_label_w.setStyleSheet(
+            f"color:{color}; font-size:12px; font-weight:600;"
+        )
 
 
 class AnalyticsScreen(QWidget):
@@ -1572,9 +1605,22 @@ class Dashboard(QMainWindow):
         result = popup.exec()
         self._break_pending  = False
         self._break_cooldown = 600
+
         if result == QDialog.DialogCode.Accepted:
-            self._verifying        = True
-            self._verify_countdown = 300
+            action = popup.get_selected_action()
+            # Tell reward system verification has started
+            if self.session_manager is not None:
+                self.session_manager.reward_system.on_break_triggered(
+                    vfq_at_trigger=self._vfq_at_trigger,
+                    action=action
+                )
+            else:
+                # Mock mode — start internal verification
+                self._verifying        = True
+                self._verify_countdown = VERIFY_WINDOW_SECS
+        else:
+            if self.session_manager is not None:
+                self.session_manager.reward_system.on_break_skipped()
 
     def update_from_pipeline(self, data: dict):
         """Called by session_manager every second with real features."""
@@ -1593,6 +1639,29 @@ class Dashboard(QMainWindow):
             'strain_label': data.get('strain_label', 'NORMAL'),
         })
         self.screen_live.chart.add_point(vfq)
+
+    def update_tcn_prediction(self, label, probs):
+        """Forward TCN prediction to live screen."""
+        self.screen_live.update_tcn_prediction(label, probs)
+
+    def show_reward(self, points, total, drop):
+        """Called by session_manager when camera verifies recovery."""
+        self._reward_points = total
+        self.screen_live.update_rewards(total)
+        rw = RewardPopup(points, total, self)
+        rw.exec()
+
+    def show_verification_failed(self):
+        """Called when verification window expires without VFQ drop."""
+        from PyQt6.QtWidgets import QMessageBox
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Verification Failed")
+        msg.setText(
+            "Your VFQ did not drop enough during the break window.\n"
+            "No reward this time — try a longer recovery action."
+        )
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.exec()
 
     def run(self):
         self.show()

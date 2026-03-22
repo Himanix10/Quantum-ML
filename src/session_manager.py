@@ -1,14 +1,29 @@
 import os
 import json
 import time
+import numpy as np
 from datetime import datetime
 from data_logger import DataLogger
 from vfq_calculator import VFQCalculator
 from break_reminder import BreakReminderSystem
 from strain_tracker import StrainTracker
+from reward_system import RewardSystem
 
 
 class SessionManager:
+    TCN_FEATURES = [
+        'ear', 'blink_rate', 'gaze_x', 'gaze_y', 'gaze_deviation',
+        'head_pitch', 'head_yaw', 'head_roll',
+        'luminance', 'light_variance', 'glare_detected',
+        'keystrokes_per_min', 'backspace_per_min',
+        'mouse_dist_per_min', 'clicks_per_min',
+        'session_duration',
+        'ear_roll_mean', 'ear_roll_std',
+        'blink_rate_roll_mean', 'blink_rate_roll_std',
+        'gaze_deviation_roll_mean', 'fatigue_progression',
+        'ear_trend'
+    ]
+
     def __init__(self, user_id="user_001", profile_dir="../data/profiles"):
         self.user_id      = user_id
         self.profile_dir  = profile_dir
@@ -24,6 +39,13 @@ class SessionManager:
         self.vfq_history     = []
         self.break_reminder  = BreakReminderSystem()
         self.strain_tracker  = StrainTracker()
+        self.reward_system   = RewardSystem(user_id=user_id)
+
+        # Load TCN model for live inference
+        self.tcn_model       = None
+        self.tcn_device      = None
+        self._feature_buffer = []  # rolling 60-second window
+        self._load_tcn_model()
 
     # ── Profile ───────────────────────────────────────────────────────────────
 
@@ -50,6 +72,65 @@ class SessionManager:
             profile = self.profile
         with open(self.profile_path, "w") as f:
             json.dump(profile, f, indent=2)
+
+    # ── TCN model ─────────────────────────────────────────────────────────────
+
+    def _load_tcn_model(self):
+        """Load trained TCN model for live inference."""
+        try:
+            import torch
+            import sys
+            sys.path.insert(0, os.path.dirname(__file__))
+            from tcn_model import load_model
+            model_path = os.path.join(
+                os.path.dirname(__file__), '..', 'models', 'tcn_model.pt'
+            )
+            if os.path.exists(model_path):
+                self.tcn_model, self.tcn_device = load_model()
+                print("TCN model loaded for live inference.")
+            else:
+                print("TCN model not found — running VFQ only.")
+        except Exception as e:
+            print(f"TCN load failed: {e} — running VFQ only.")
+
+    def _run_tcn_inference(self, features):
+        """
+        Builds a 60-second window and runs TCN prediction.
+        Returns (predicted_class, label, probabilities) or None.
+        """
+        if self.tcn_model is None:
+            return None
+
+        try:
+            import torch
+            from tcn_model import predict
+
+            # Build feature row — 23 values
+            row = []
+            for col in self.TCN_FEATURES:
+                val = features.get(col, 0)
+                if val is None or val != val:  # None or NaN
+                    val = 0.0
+                row.append(float(val))
+
+            # Add to rolling buffer
+            self._feature_buffer.append(row)
+            if len(self._feature_buffer) > 60:
+                self._feature_buffer.pop(0)
+
+            # Only predict when we have a full 60-second window
+            if len(self._feature_buffer) < 60:
+                return None
+
+            window = np.array(self._feature_buffer, dtype=np.float32)
+            pred_class, pred_label, probs = predict(
+                self.tcn_model, window, self.tcn_device
+            )
+            return pred_class, pred_label, probs
+
+        except Exception as e:
+            print(f"TCN inference error: {e}")
+            return None
 
     # ── Session lifecycle ─────────────────────────────────────────────────────
 
@@ -102,8 +183,42 @@ class SessionManager:
         trend                    = self.strain_tracker.get_trend()
         features["strain_trend"] = trend
 
+        # Reward verification — passive camera monitoring
+        reward_status = self.reward_system.update(vfq)
+
+        if reward_status.get('reward_just_earned'):
+            if self.dashboard is not None:
+                try:
+                    self.dashboard.show_reward(
+                        points=10,
+                        total=self.reward_system.total_points,
+                        drop=reward_status.get('drop', 0)
+                    )
+                except Exception:
+                    pass
+
+        elif reward_status.get('expired'):
+            if self.dashboard is not None:
+                try:
+                    self.dashboard.show_verification_failed()
+                except Exception:
+                    pass
+
         # Log
         self.logger.log(features)
+
+        # TCN live inference
+        tcn_result = self._run_tcn_inference(features)
+        if tcn_result:
+            tcn_class, tcn_label, tcn_probs = tcn_result
+            features['tcn_prediction'] = tcn_label
+
+            # Send to dashboard
+            if self.dashboard is not None:
+                try:
+                    self.dashboard.update_tcn_prediction(tcn_label, tcn_probs)
+                except Exception:
+                    pass
 
         # Running stats
         ear = features.get("ear")
@@ -181,6 +296,12 @@ class SessionManager:
         print(f"Avg VFQ:       {avg_vfq}")
         print(f"Max VFQ:       {max_vfq}")
         print(f"High Strain %: {high_strain_pct}%")
+
+        # Reward summary
+        reward_summary = self.reward_system.end_session()
+        print(f"Session rewards:   {reward_summary['session_points']} pts "
+              f"({reward_summary['session_recoveries']} recoveries)")
+        print(f"Total all-time:    {reward_summary['total_points']} pts")
 
         self.current_session = None
         self.break_reminder.stop()
