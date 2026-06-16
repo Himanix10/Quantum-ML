@@ -14,11 +14,12 @@ class DataLogger:
         # Create data directory if not exists
         os.makedirs(data_dir, exist_ok=True)
 
-        # Create session file
-        timestamp        = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.filepath    = os.path.join(
-            data_dir,
-            f"{user_id}_session_{timestamp}.csv"
+        # ── Session CSV filename ─────────────────────────────────────────────
+        # Always uses {user_id}_session_{timestamp}.csv regardless of path.
+        # This ensures personalization.py glob pattern finds the files.
+        timestamp     = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.filepath = os.path.join(
+            data_dir, f"{user_id}_session_{timestamp}.csv"
         )
 
         # Define columns
@@ -46,7 +47,7 @@ class DataLogger:
             "clicks_per_min",
             "vfq_score",
             "strain_label",
-            "strain_trend" # Will be auto-generated later
+            "strain_trend"
         ]
 
         # Write header
@@ -99,7 +100,6 @@ class DataLogger:
 
         self.row_count += 1
 
-        # Print progress every 10 rows
         if self.row_count % 10 == 0:
             print(f"Logged {self.row_count} rows → {self.filepath}")
 
@@ -120,28 +120,17 @@ if __name__ == "__main__":
     cap      = cv2.VideoCapture(0)
 
     print("Data logger running. Press Q to quit.")
-    print("Check the data/ folder for your CSV file.\n")
-
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-
         frame, features = pipeline.process_frame(frame)
         logger.log(features)
-
-        # Show row count on frame
-        cv2.putText(frame,
-                    f"Logged: {logger.get_row_count()} rows",
-                    (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                    (0, 255, 0), 2)
-
+        cv2.putText(frame, f"Logged: {logger.get_row_count()} rows",
+                    (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         cv2.imshow("Data Logger", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    pipeline.stop()
-    cap.release()
-    cv2.destroyAllWindows()
-    print(f"\nSession complete. Total rows: {logger.get_row_count()}")
-    print(f"File saved: {logger.get_filepath()}")
+    pipeline.stop(); cap.release(); cv2.destroyAllWindows()
+    print(f"\nFile saved: {logger.get_filepath()}")

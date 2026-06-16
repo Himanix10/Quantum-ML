@@ -1,0 +1,3 @@
+timestamp,session_id,user_id,session_duration,ear,blink_count,blink_rate,gaze_x,gaze_y,gaze_deviation,head_pitch,head_yaw,head_roll,face_detected,luminance,light_variance,glare_detected,keystrokes_per_min,backspace_per_min,mouse_dist_per_min,clicks_per_min,vfq_score,strain_label,strain_trend
+2026-04-09 15:48:11,b8d2eb99,himani,144.9,0.28024270815135577,17,8,1.2625,-2.2375,1.71,12.37,8.03,0.31,True,116.84,0.01,False,0.0,0.0,5990.58,12.0,25.9,LOW,WORSENING
+2026-04-09 15:48:12,b8d2eb99,himani,145.9,0.3104926595275824,17,8,2.225,-1.875,1.94,11.87,11.53,0.63,True,117.35,0.03,False,0.0,0.0,5990.58,16.0,26.5,LOW,STABLE

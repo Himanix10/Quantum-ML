@@ -5,7 +5,7 @@ Lead Developer — AI Core
 K-Means clustering on session history to identify personal strain patterns.
 Adapts alert thresholds based on:
   - Time of day patterns
-  - Session length patterns  
+  - Session length patterns
   - Task intensity patterns (keystroke/mouse activity)
   - Personal strain trajectory patterns
 
@@ -31,6 +31,59 @@ PROFILE_DIR  = os.path.join(DATA_DIR, 'profiles')
 N_CLUSTERS   = 3   # LOW strain sessions / MEDIUM / HIGH strain sessions
 MIN_SESSIONS = 3   # minimum sessions needed before adaptation kicks in
 
+# ── CLINICAL MINIMUMS ─────────────────────────────────────────────────────────
+# Used for one-time baseline health check after first calibration.
+# Sources:
+#   blink_rate — Tsubota & Nakamori (1993), Patel et al. (1991)
+#   ear        — Soukupová & Čech (2016)
+CLINICAL_MINIMUMS = {
+    'blink_mean': 7.0,
+    'ear_mean':   0.20,
+}
+
+# ── MAX THRESHOLD CAP ─────────────────────────────────────────────────────────
+# Personalization may raise threshold for relaxed users but must never exceed
+# this clinical ceiling — VFQ 45 already indicates moderate strain onset.
+MAX_VFQ_THRESHOLD = 45.0
+
+
+def get_clinical_warnings(baseline: dict) -> list:
+    """
+    Compare a user's personal baseline against published clinical minimums.
+    Returns a list of warning strings — empty if all within normal range.
+
+    Called once after baseline calibration. Result stored in profile under
+    'baseline_clinical_warnings' and 'baseline_warning_shown'.
+
+    Args:
+        baseline: dict containing at minimum 'blink_mean' and 'ear_mean'
+
+    Returns:
+        List of human-readable warning strings (empty = no concerns)
+    """
+    warnings = []
+
+    blink = baseline.get('blink_mean', 99)
+    ear   = baseline.get('ear_mean',   99)
+
+    if blink < CLINICAL_MINIMUMS['blink_mean']:
+        warnings.append(
+            f"Your natural blink rate ({blink:.1f}/min) is below the clinical "
+            f"minimum of 7/min (Tsubota & Nakamori, 1993; Patel et al., 1991). "
+            f"This may indicate a pre-existing dry eye tendency. Consider "
+            f"consulting an eye care professional."
+        )
+
+    if ear < CLINICAL_MINIMUMS['ear_mean']:
+        warnings.append(
+            f"Your eye openness measure ({ear:.3f}) is below population norms "
+            f"(Soukupova & Cech, 2016). The system will continue tracking "
+            f"relative changes from your personal baseline, but your resting "
+            f"state itself suggests existing eye fatigue."
+        )
+
+    return warnings
+
 
 class PersonalizationEngine:
     """
@@ -42,9 +95,12 @@ class PersonalizationEngine:
 
     Adapted thresholds are computed per cluster so the break reminder
     fires earlier during intense sessions and later during relaxed ones.
+
+    Threshold cap: personalization never raises break_trigger_vfq above
+    MAX_VFQ_THRESHOLD (45) to maintain clinical defensibility.
     """
 
-    def __init__(self, user_id='user_001'):
+    def __init__(self, user_id='user_001', sessions_dir=None, output_path=None):
         self.user_id          = user_id
         self.n_clusters       = N_CLUSTERS
         self.is_fitted        = False
@@ -53,9 +109,24 @@ class PersonalizationEngine:
         self.session_features = None
         self.session_labels_  = None
         self.adapted_thresholds = self._default_thresholds()
-        self._output_path     = os.path.join(
-            PROFILE_DIR, f'{user_id}_personalization.json'
-        )
+
+        # sessions_dir: where this user's CSVs live
+        if sessions_dir is not None:
+            self._sessions_dir = sessions_dir
+        else:
+            _base = os.path.dirname(os.path.abspath(__file__))
+            self._sessions_dir = os.path.join(
+                _base, '..', 'data', 'users', user_id, 'sessions'
+            )
+
+        # output_path: where personalization model JSON is saved
+        if output_path is not None:
+            self._output_path = output_path
+        else:
+            _udir = os.path.dirname(self._sessions_dir)
+            os.makedirs(_udir, exist_ok=True)
+            self._output_path = os.path.join(_udir, 'personalization.json')
+
         # Load existing model if available
         self._load()
 
@@ -84,11 +155,11 @@ class PersonalizationEngine:
         if 'vfq_score' in df.columns:
             vfqs = pd.to_numeric(
                 df['vfq_score'], errors='coerce').dropna()
-            features['avg_vfq']     = float(vfqs.mean()) if len(vfqs) else 0
-            features['max_vfq']     = float(vfqs.max())  if len(vfqs) else 0
-            features['high_pct']    = float(
+            features['avg_vfq']   = float(vfqs.mean()) if len(vfqs) else 0
+            features['max_vfq']   = float(vfqs.max())  if len(vfqs) else 0
+            features['high_pct']  = float(
                 (vfqs >= 60).sum() / len(vfqs) * 100) if len(vfqs) else 0
-            features['vfq_slope']   = self._compute_slope(vfqs.tolist())
+            features['vfq_slope'] = self._compute_slope(vfqs.tolist())
         else:
             features.update({'avg_vfq': 0, 'max_vfq': 0,
                               'high_pct': 0, 'vfq_slope': 0})
@@ -109,7 +180,6 @@ class PersonalizationEngine:
             ts = pd.to_datetime(df['timestamp'].iloc[0], errors='coerce')
             features['hour_of_day'] = float(ts.hour) if ts else 12.0
         except Exception:
-            # Try to get from filename
             try:
                 hour = int(filename[-10:-8])
                 features['hour_of_day'] = float(hour)
@@ -147,7 +217,6 @@ class PersonalizationEngine:
         """
         n_samples = len(X)
         if n_samples < n_clusters:
-            # Not enough sessions — assign all to one cluster
             return np.array([X.mean(axis=0)]), np.zeros(n_samples, dtype=int)
 
         best_labels    = None
@@ -155,17 +224,14 @@ class PersonalizationEngine:
         best_inertia   = float('inf')
 
         for _ in range(n_init):
-            # Random initialization
             idx       = np.random.choice(n_samples, n_clusters, replace=False)
             centroids = X[idx].copy()
 
             for _ in range(max_iter):
-                # Assign clusters
                 dists  = np.linalg.norm(
                     X[:, np.newaxis] - centroids[np.newaxis, :], axis=2)
                 labels = np.argmin(dists, axis=1)
 
-                # Update centroids
                 new_centroids = np.array([
                     X[labels == k].mean(axis=0)
                     if (labels == k).sum() > 0
@@ -177,7 +243,6 @@ class PersonalizationEngine:
                     break
                 centroids = new_centroids
 
-            # Compute inertia
             inertia = sum(
                 np.linalg.norm(X[i] - centroids[labels[i]]) ** 2
                 for i in range(n_samples)
@@ -199,9 +264,9 @@ class PersonalizationEngine:
         """
         print(f"\n[Personalization] Fitting K-Means for {self.user_id}...")
 
-        # Load all sessions
-        pattern = os.path.join(
-            DATA_DIR, f'user_001_session_*.csv')
+        # Always use {user_id}_session_*.csv — DataLogger always writes this format
+        pattern = os.path.join(self._sessions_dir,
+                               f'{self.user_id}_session_*.csv')
         files   = sorted(glob(pattern))
 
         if len(files) < MIN_SESSIONS:
@@ -215,7 +280,7 @@ class PersonalizationEngine:
         for f in files:
             try:
                 df = pd.read_csv(f)
-                if len(df) < 60:  # skip sessions under 1 minute
+                if len(df) < 60:
                     continue
                 feats = self._extract_session_features(df, f)
                 session_features.append(feats)
@@ -229,7 +294,6 @@ class PersonalizationEngine:
 
         print(f"  Sessions loaded: {len(session_features)}")
 
-        # Build feature matrix
         feature_keys = [
             'avg_vfq', 'max_vfq', 'high_pct', 'vfq_slope',
             'avg_blink', 'duration_min', 'hour_of_day', 'avg_keystrokes'
@@ -239,15 +303,13 @@ class PersonalizationEngine:
             for f in session_features
         ], dtype=np.float32)
 
-        # Normalize each feature to 0-1
-        X_min  = X_raw.min(axis=0)
-        X_max  = X_raw.max(axis=0)
+        X_min   = X_raw.min(axis=0)
+        X_max   = X_raw.max(axis=0)
         X_range = X_max - X_min
-        X_range[X_range == 0] = 1  # avoid division by zero
+        X_range[X_range == 0] = 1
         X_norm = (X_raw - X_min) / X_range
 
-        # Fit K-Means
-        n_clusters     = min(self.n_clusters, len(session_features))
+        n_clusters        = min(self.n_clusters, len(session_features))
         centroids, labels = self._kmeans_fit(X_norm, n_clusters)
 
         self.centroids_       = centroids
@@ -259,7 +321,6 @@ class PersonalizationEngine:
         self._feature_keys    = feature_keys
         self.is_fitted        = True
 
-        # Analyze clusters
         cluster_analysis = self._analyze_clusters(
             session_features, labels, n_clusters)
 
@@ -289,13 +350,12 @@ class PersonalizationEngine:
 
             cluster_feats = [features[i] for i in indices]
 
-            avg_vfq   = np.mean([f['avg_vfq']   for f in cluster_feats])
-            avg_blink = np.mean([f['avg_blink']  for f in cluster_feats])
+            avg_vfq   = np.mean([f['avg_vfq']    for f in cluster_feats])
+            avg_blink = np.mean([f['avg_blink']   for f in cluster_feats])
             avg_hour  = np.mean([f['hour_of_day'] for f in cluster_feats])
             avg_dur   = np.mean([f['duration_min'] for f in cluster_feats])
-            avg_high  = np.mean([f['high_pct']   for f in cluster_feats])
+            avg_high  = np.mean([f['high_pct']    for f in cluster_feats])
 
-            # Label the cluster by its character
             if avg_vfq < 30:
                 label = 'Relaxed'
             elif avg_vfq < 50:
@@ -304,13 +364,13 @@ class PersonalizationEngine:
                 label = 'Intense'
 
             analysis[cid] = {
-                'label':      label,
-                'count':      len(indices),
-                'avg_vfq':    round(avg_vfq,   1),
-                'avg_blink':  round(avg_blink, 1),
-                'avg_hour':   round(avg_hour,  1),
-                'avg_dur':    round(avg_dur,   1),
-                'avg_high_pct': round(avg_high, 1),
+                'label':        label,
+                'count':        len(indices),
+                'avg_vfq':      round(avg_vfq,   1),
+                'avg_blink':    round(avg_blink,  1),
+                'avg_hour':     round(avg_hour,   1),
+                'avg_dur':      round(avg_dur,    1),
+                'avg_high_pct': round(avg_high,   1),
             }
 
         return analysis
@@ -319,10 +379,9 @@ class PersonalizationEngine:
 
     def predict_context(self, current_features: dict) -> dict:
         """
-        Given current session features, predict which cluster
-        this session belongs to and return adapted thresholds.
-
-        Call this at session start or every 5 minutes during a session.
+        Given current session features, predict which cluster this session
+        belongs to and return adapted thresholds.
+        Called every 5 minutes during a session.
         """
         if not self.is_fitted:
             return self.adapted_thresholds
@@ -334,22 +393,17 @@ class PersonalizationEngine:
                 dtype=np.float32
             )
 
-            # Normalize
             x_range = self._X_max - self._X_min
             x_range[x_range == 0] = 1
             x_norm = (x_raw - self._X_min) / x_range
             x_norm = x_norm.reshape(1, -1)
 
-            # Find nearest centroid
-            dists   = np.linalg.norm(
-                self.centroids_ - x_norm, axis=1)
+            dists   = np.linalg.norm(self.centroids_ - x_norm, axis=1)
             cluster = int(np.argmin(dists))
 
-            # Get cluster info
             info    = self._cluster_analysis.get(cluster, {})
             label   = info.get('label', 'Moderate')
 
-            # Adapt thresholds based on cluster
             thresholds = self._adapt_thresholds(cluster, label, info)
             self.adapted_thresholds = thresholds
 
@@ -367,29 +421,37 @@ class PersonalizationEngine:
         """
         Adapt break trigger threshold based on session context.
 
-        Relaxed sessions:  higher threshold (user naturally low VFQ)
-        Moderate sessions: default threshold
-        Intense sessions:  lower threshold (user strains faster)
+        Relaxed sessions:  raise threshold (user naturally low VFQ) —
+                           capped at MAX_VFQ_THRESHOLD (45) so we never
+                           delay intervention beyond clinical onset.
+        Moderate sessions: default threshold (40).
+        Intense sessions:  lower threshold (30) — user strains faster.
+
+        The cap ensures clinical defensibility: even for the most relaxed
+        user, we intervene before VFQ=45 (moderate strain onset).
         """
         base_vfq      = 40
         base_duration = 300   # 5 minutes
 
         if label == 'Relaxed':
-            # User is naturally relaxed — raise threshold slightly
-            adapted_vfq      = min(55, base_vfq + 10)
+            # Raise threshold — but cap at clinical maximum of 45
+            adapted_vfq      = min(MAX_VFQ_THRESHOLD, base_vfq + 10)
             adapted_duration = int(base_duration * 1.2)
-            context_note     = "Relaxed session — thresholds raised"
+            context_note     = (
+                f"Relaxed session — threshold raised to {adapted_vfq} "
+                f"(capped at {MAX_VFQ_THRESHOLD} for clinical safety)"
+            )
 
         elif label == 'Intense':
-            # User strains fast — lower threshold, fire earlier
+            # Lower threshold — fire earlier
             adapted_vfq      = max(30, base_vfq - 10)
             adapted_duration = int(base_duration * 0.8)
-            context_note     = "Intense session — thresholds lowered"
+            context_note     = "Intense session — threshold lowered to 30"
 
         else:
             adapted_vfq      = base_vfq
             adapted_duration = base_duration
-            context_note     = "Moderate session — default thresholds"
+            context_note     = "Moderate session — default thresholds (40)"
 
         return {
             'break_trigger_vfq':      adapted_vfq,
@@ -411,8 +473,8 @@ class PersonalizationEngine:
         if not self.is_fitted:
             return {'fitted': False, 'message': 'Need more sessions'}
         return {
-            'fitted':   True,
-            'clusters': self._cluster_analysis,
+            'fitted':     True,
+            'clusters':   self._cluster_analysis,
             'n_sessions': len(self.session_features)
         }
 
@@ -423,16 +485,16 @@ class PersonalizationEngine:
         try:
             os.makedirs(PROFILE_DIR, exist_ok=True)
             data = {
-                'user_id':          self.user_id,
-                'fitted_at':        datetime.now().strftime(
+                'user_id':            self.user_id,
+                'fitted_at':          datetime.now().strftime(
                     "%Y-%m-%d %H:%M:%S"),
-                'n_sessions':       len(self.session_features),
-                'n_clusters':       self.n_clusters,
-                'centroids':        self.centroids_.tolist(),
-                'X_min':            self._X_min.tolist(),
-                'X_max':            self._X_max.tolist(),
-                'feature_keys':     self._feature_keys,
-                'cluster_analysis': self._cluster_analysis,
+                'n_sessions':         len(self.session_features),
+                'n_clusters':         self.n_clusters,
+                'centroids':          self.centroids_.tolist(),
+                'X_min':              self._X_min.tolist(),
+                'X_max':              self._X_max.tolist(),
+                'feature_keys':       self._feature_keys,
+                'cluster_analysis':   self._cluster_analysis,
                 'adapted_thresholds': self.adapted_thresholds,
             }
             with open(self._output_path, 'w') as f:
@@ -473,7 +535,7 @@ def run_standalone():
     print("  Personalization Engine — EyeStrain AI")
     print("=" * 50)
 
-    engine = PersonalizationEngine(user_id='user_001')
+    engine  = PersonalizationEngine(user_id='user_001')
     success = engine.fit()
 
     if not success:
@@ -491,16 +553,15 @@ def run_standalone():
         print(f"    Avg Duration:  {info['avg_dur']:.0f} min")
         print(f"    High Strain %: {info['avg_high_pct']}%")
 
-    # Simulate predicting context for a current session
     print("\n\nSimulating context prediction for current session...")
     mock_current = {
-        'avg_vfq':       45.0,
-        'max_vfq':       72.0,
-        'high_pct':      18.0,
-        'vfq_slope':     0.05,
-        'avg_blink':     6.2,
-        'duration_min':  25.0,
-        'hour_of_day':   23.0,
+        'avg_vfq':        45.0,
+        'max_vfq':        72.0,
+        'high_pct':       18.0,
+        'vfq_slope':      0.05,
+        'avg_blink':      6.2,
+        'duration_min':   25.0,
+        'hour_of_day':    23.0,
         'avg_keystrokes': 45.0,
     }
     thresholds = engine.predict_context(mock_current)

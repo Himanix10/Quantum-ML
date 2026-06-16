@@ -1,0 +1,23 @@
+{
+  "user_001": {
+    "username": "user_001",
+    "full_name": "user_001",
+    "password_hash": "e38d797692c25d0cc5d8201c4b86486f0257b77a1994781a66aac752ddaf15d7",
+    "email": "",
+    "occupation": "Student",
+    "avatar_path": "",
+    "created_at": "2026-04-08 15:03:25",
+    "last_login": "2026-04-25 12:29:11",
+    "migrated": true
+  },
+  "himani": {
+    "username": "himani",
+    "full_name": "Himani Gupta",
+    "password_hash": "ef797c8118f02dfb649607dd5d3f8c7623048c9c063d532cc95c5ed7a898a64f",
+    "email": "2312114@nec.edu.in",
+    "occupation": "Student",
+    "avatar_path": "",
+    "created_at": "2026-04-09 14:54:27",
+    "last_login": "2026-04-25 09:50:18"
+  }
+}

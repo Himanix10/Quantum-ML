@@ -1,0 +1,2 @@
+timestamp,session_id,user_id,session_duration,ear,blink_count,blink_rate,gaze_x,gaze_y,gaze_deviation,head_pitch,head_yaw,head_roll,face_detected,luminance,light_variance,glare_detected,keystrokes_per_min,backspace_per_min,mouse_dist_per_min,clicks_per_min,vfq_score,strain_label,strain_trend
+2026-04-07 12:33:25,36af7e2a,user_001,11.2,0.2917611280377388,5,5,-0.3125,-1.8125,1.23,-3.36,2.93,-3.39,True,137.98,3.88,False,0.0,0.0,716.45,1.0,25.4,LOW,STABLE

@@ -4,7 +4,12 @@ from pynput import keyboard, mouse
 
 
 class BehavioralFeatureExtractor:
-    def __init__(self, window_seconds=60):
+    def __init__(self, window_seconds=15):
+        # ── Reduced from 60s to 15s ───────────────────────────────────────────
+        # 60s window meant keystrokes from a minute ago still showed up in
+        # the rate — causing false "still typing" gates during neck stretch
+        # and 20-20-20 verification even after the user had stopped completely.
+        # 15s window reflects actual current behaviour much more accurately.
         self.window_seconds  = window_seconds
 
         # Keyboard tracking
@@ -12,9 +17,9 @@ class BehavioralFeatureExtractor:
         self.backspace_times = deque()
 
         # Mouse tracking
-        self.mouse_positions = deque(maxlen=2)
-        self.mouse_dist_buffer = deque()
-        self.click_times     = deque()
+        self.mouse_positions    = deque(maxlen=2)
+        self.mouse_dist_buffer  = deque()
+        self.click_times        = deque()
 
         # Start listeners
         self.kb_listener = keyboard.Listener(on_press=self._on_key_press)
@@ -48,6 +53,25 @@ class BehavioralFeatureExtractor:
         while dq and now - dq[0] > self.window_seconds:
             dq.popleft()
 
+    def reset_keyboard(self):
+        """
+        Clear all keyboard history immediately.
+        Called by reward_system when verification starts so stale
+        keystrokes from before the break reminder do not block gates.
+        """
+        self.key_times.clear()
+        self.backspace_times.clear()
+
+    def reset_mouse(self):
+        """
+        Clear mouse distance buffer immediately.
+        Called by reward_system when verification starts so accumulated
+        mouse movement from before the break reminder does not block the
+        20-20-20 gate (mouse threshold 5000 px/min).
+        """
+        self.mouse_dist_buffer.clear()
+        self.click_times.clear()
+
     def get_features(self):
         now = time.time()
 
@@ -61,7 +85,7 @@ class BehavioralFeatureExtractor:
               now - self.mouse_dist_buffer[0][1] > self.window_seconds:
             self.mouse_dist_buffer.popleft()
 
-        # Keystrokes per minute
+        # Keystrokes per minute — normalised to 1 minute
         keystrokes_per_min = len(self.key_times) / \
                              (self.window_seconds / 60)
 
@@ -70,12 +94,12 @@ class BehavioralFeatureExtractor:
                              (self.window_seconds / 60)
 
         # Mouse distance per minute
-        mouse_dist = sum(d for d, _ in self.mouse_dist_buffer)
+        mouse_dist         = sum(d for d, _ in self.mouse_dist_buffer)
         mouse_dist_per_min = mouse_dist / (self.window_seconds / 60)
 
         # Click rate
-        clicks_per_min = len(self.click_times) / \
-                         (self.window_seconds / 60)
+        clicks_per_min     = len(self.click_times) / \
+                             (self.window_seconds / 60)
 
         return {
             "keystrokes_per_min":  round(keystrokes_per_min, 2),
