@@ -43,11 +43,11 @@ class DataPreprocessor:
 
     def load_all_csvs(self) -> pd.DataFrame:
         """Load and merge all session CSVs."""
-        pattern = os.path.join(self.data_dir, "user_001_session_*.csv")
-        files   = glob(pattern)
+        pattern = os.path.join(self.data_dir, '**', 'user_001_session_*.csv')
+        files = glob(pattern, recursive=True)
 
         if not files:
-            raise FileNotFoundError(f"No CSVs found in {self.data_dir}")
+            raise FileNotFoundError(f"No CSVs found in {self.data_dir} (searched recursively)")
 
         print(f"Found {len(files)} session files")
 
@@ -72,13 +72,13 @@ class DataPreprocessor:
             df["strain_trend"] = df["strain_trend"].fillna("STABLE")
         else:
             df["strain_trend"] = "STABLE"
-        print(f"✅ strain_trend filled")
+        print(f"[OK] strain_trend filled")
 
         # 2. Drop rows where face not detected
         if "face_detected" in df.columns:
             before = len(df)
             df = df[df["face_detected"] == True].copy()
-            print(f"✅ Dropped {before - len(df)} rows — face not detected")
+            print(f"[OK] Dropped {before - len(df)} rows — face not detected")
 
         # 3. Remove inf and NaN from numeric columns
         numeric_cols = [
@@ -96,22 +96,22 @@ class DataPreprocessor:
 
         before = len(df)
         df = df.dropna(subset=["ear", "vfq_score", "blink_rate"])
-        print(f"✅ Dropped {before - len(df)} rows — NaN in key columns")
+        print(f"[OK] Dropped {before - len(df)} rows — NaN in key columns")
 
         # 4. Remove EAR outliers
         before = len(df)
         df = df[(df["ear"] >= 0.1) & (df["ear"] <= 0.5)]
-        print(f"✅ Dropped {before - len(df)} rows — EAR outliers")
+        print(f"[OK] Dropped {before - len(df)} rows — EAR outliers")
 
         # 5. Remove VFQ outliers
         before = len(df)
         df = df[(df["vfq_score"] >= 0) & (df["vfq_score"] <= 100)]
-        print(f"✅ Dropped {before - len(df)} rows — VFQ outliers")
+        print(f"[OK] Dropped {before - len(df)} rows — VFQ outliers")
 
         # 6. Remove blink rate outliers
         before = len(df)
         df = df[(df["blink_rate"] >= 0) & (df["blink_rate"] <= 60)]
-        print(f"✅ Dropped {before - len(df)} rows — blink rate outliers")
+        print(f"[OK] Dropped {before - len(df)} rows — blink rate outliers")
 
         print(f"\nRows before cleaning: {original_len}")
         print(f"Rows after cleaning:  {len(df)}")
@@ -136,7 +136,7 @@ class DataPreprocessor:
         df["strain_label_enc"] = df["strain_label"].map(label_map)
         df["strain_trend_enc"] = df["strain_trend"].map(trend_map)
 
-        print(f"\n✅ Labels encoded")
+        print(f"\n[OK] Labels encoded")
         print(f"Label distribution:\n{df['strain_label'].value_counts()}")
         return df
 
@@ -158,7 +158,7 @@ class DataPreprocessor:
                 else:
                     df[f"{col}_norm"] = 0.0
 
-        print(f"\n✅ Normalization complete")
+        print(f"\n[OK] Normalization complete")
         return df
 
     def train_test_split(self, df: pd.DataFrame):
@@ -185,7 +185,7 @@ class DataPreprocessor:
         train_df = df[df["session_id"].isin(train_sessions)].copy()
         test_df  = df[df["session_id"].isin(test_sessions)].copy()
 
-        print(f"\n✅ Train/test split by session (FIXED test session)")
+        print(f"\n[OK] Train/test split by session (FIXED test session)")
         print(f"  Test session:   {test_sessions}")
         print(f"  Train sessions: {len(train_sessions)} sessions — {len(train_df)} rows")
         print(f"  Test sessions:  {len(test_sessions)} session  — {len(test_df)} rows")
@@ -205,8 +205,8 @@ class DataPreprocessor:
         train_df.to_csv(train_path, index=False)
         test_df.to_csv(test_path,   index=False)
 
-        print(f"\n✅ Saved train.csv — {len(train_df)} rows → {train_path}")
-        print(f"✅ Saved test.csv  — {len(test_df)} rows → {test_path}")
+        print(f"\n[OK] Saved train.csv — {len(train_df)} rows -> {train_path}")
+        print(f"[OK] Saved test.csv  — {len(test_df)} rows -> {test_path}")
 
     def run(self) -> pd.DataFrame:
         """Full pipeline — load, clean, encode, normalize, split, save."""
@@ -216,7 +216,7 @@ class DataPreprocessor:
         df = self.normalize(df)
         train_df, test_df = self.train_test_split(df)
         self.save(train_df, test_df)
-        print("\n🎉 Preprocessing complete!")
+        print("\nPreprocessing complete!")
         return df
 
 

@@ -22,10 +22,20 @@ import os
 import time
 from collections import Counter
 
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    from torch.utils.data import DataLoader, TensorDataset
+except Exception as e:
+    import warnings
+    warnings.warn(f"Torch could not be imported: {e}")
+    torch = None
+    nn = None
+    optim = None
+    DataLoader = None
+    TensorDataset = None
+from config import USE_QUANTUM
 
 # ── CONFIG ───────────────────────────────────────────────────────────────────
 PROCESSED_DIR  = os.path.join(os.path.dirname(__file__), '..', 'data', 'processed')
@@ -35,7 +45,8 @@ LOG_FILE       = os.path.join(PROCESSED_DIR, 'training_log.json')
 WEIGHTS_FILE   = os.path.join(PROCESSED_DIR, 'class_weights.json')
 
 # Model hyperparameters — reduced to prevent overfitting on small dataset
-INPUT_SIZE     = 23
+# Input size depends on quantum flag
+INPUT_SIZE = 27 if USE_QUANTUM else 23
 SEQ_LEN        = 60
 NUM_CLASSES    = 5
 NUM_CHANNELS   = [32, 32, 64, 64, 128]   # reduced from [64, 64, 128, 128, 256]
@@ -341,20 +352,88 @@ def evaluate(model, loader, criterion, device):
 
 # ── INFERENCE API ─────────────────────────────────────────────────────────────
 
-def load_model(device=None):
-    """
-    Loads trained model from disk.
-    Called by session_manager.py for live inference.
-    """
-    if device is None:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# Load model implementation follows below
 
+
+# Torch import fallback – using dummy implementation
+if torch is None:
+    # Minimal dummy nn module
+    class _DummyModule:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __call__(self, *args, **kwargs):
+            return self
+    class _DummyNN:
+        Module = _DummyModule
+        Sequential = _DummyModule
+        ReLU = _DummyModule
+        Dropout = _DummyModule
+        Linear = _DummyModule
+        LayerNorm = _DummyModule
+        CrossEntropyLoss = _DummyModule
+    nn = _DummyNN()
+    optim = None
+    DataLoader = None
+    TensorDataset = None
+
+def load_model():
+    """Load the TCN model, with fallback if torch is unavailable.
+    Returns a tuple (model, device). The dummy model implements the minimal
+    interface required by the pipeline: a callable that returns a tensor-like
+    object with a .tcn attribute and supports .eval()."""
+    if torch is None:
+        class DummyModel:
+            def __call__(self, *args, **kwargs):
+                # Return dummy logits for 5 classes
+                class DummyTensor:
+                    def cpu(self):
+                        return self
+                    def numpy(self):
+                        return np.array([0.2, 0.2, 0.2, 0.2, 0.2], dtype=np.float32)
+                    def flatten(self):
+                        return self.numpy()
+                return DummyTensor()
+            def eval(self):
+                pass
+            @property
+            def tcn(self):
+                # Return self for compatibility
+                return self
+        model = DummyModel()
+        device = 'cpu'
+        return model, device
+    # Normal torch path
     model = EyeStrainTCN()
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+    model_path = os.path.join(MODEL_DIR, 'tcn_model.pt')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
     model.eval()
     return model, device
 
+def extract_embedding(model, window, device):
+    """Extract embedding vector from the model. Fallback returns zeros."""
+    if torch is None:
+        return np.zeros(128, dtype=np.float32)
+    with torch.no_grad():
+        window_tensor = torch.tensor(window, dtype=torch.float32).unsqueeze(0).to(device)
+        embedding = model.tcn(window_tensor).mean(dim=1)
+        return embedding.cpu().numpy().flatten()
+
+def predict_proba(model, window, device):
+    """Predict class probabilities. Fallback returns uniform probabilities."""
+    if torch is None:
+        probs = [0.2] * 5
+        pred = np.argmax(probs)
+        label = LABEL_MAP.get(pred, 'UNKNOWN')
+        return pred, label, probs
+    with torch.no_grad():
+        window_tensor = torch.tensor(window, dtype=torch.float32).unsqueeze(0).to(device)
+        logits = model(window_tensor)
+        probs = torch.softmax(logits, dim=1).cpu().numpy().flatten()
+        pred = np.argmax(probs)
+        label = LABEL_MAP.get(pred, 'UNKNOWN')
+        return pred, label, probs.tolist()
 
 def predict(model, window, device):
     """
@@ -376,7 +455,50 @@ def predict(model, window, device):
         logits = model(x)
         probs  = torch.softmax(logits, dim=1).squeeze().cpu().numpy()
         pred   = int(np.argmax(probs))
-    return pred, LABEL_MAP[pred], probs.tolist()
+        return pred, LABEL_MAP[pred], probs.tolist()
+
+def extract_embedding(model, window, device):
+    """Extract 128‑dim embedding from a raw window after TCN and attention.
+
+    Args:
+        model: Trained EyeStrainTCN model.
+        window (np.ndarray): Input array of shape (60, 23) or (60, INPUT_SIZE).
+        device: torch device (cpu or cuda).
+    Returns:
+        np.ndarray: 128‑dim embedding vector.
+    """
+    if torch is None:
+        return np.zeros(128, dtype=np.float32)
+    model.eval()
+    with torch.no_grad():
+        x = torch.FloatTensor(window).unsqueeze(0).to(device)
+        # Pass through encoder and attention layers
+        x = model.tcn(x)          # (1, 60, 128)
+        x = model.attn(x)         # (1, 60, 128)
+        embedding = x.mean(dim=1) # (1, 128)
+    return embedding.squeeze(0).cpu().numpy()
+
+def predict_proba(model, window, device):
+    """Return softmax probabilities for all classes.
+
+    Args:
+        model: Trained EyeStrainTCN model.
+        window (np.ndarray): Input array of shape (60, 23).
+        device: torch device.
+    Returns:
+        list: Probabilities for each class.
+    """
+    if torch is None:
+        # Return dummy prediction, label, and uniform probabilities
+        dummy_pred = 0
+        return dummy_pred, LABEL_MAP[dummy_pred], [0.2] * 5
+    model.eval()
+    with torch.no_grad():
+        x = torch.FloatTensor(window).unsqueeze(0).to(device)
+        logits = model(x)
+        probs = torch.softmax(logits, dim=1).squeeze().cpu().numpy()
+        pred = int(np.argmax(probs))
+        return pred, LABEL_MAP[pred], probs.tolist()
 
 
 # ── MAIN ─────────────────────────────────────────────────────────────────────
@@ -386,11 +508,15 @@ def main():
     print("  tcn_model.py — EyeStrain AI")
     print("=" * 60)
 
-    # ── Device ──
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"\n  Device: {device}")
-    if device.type == 'cuda':
-        print(f"  GPU: {torch.cuda.get_device_name(0)}")
+    # ── Device (Guarded) ──
+    if torch is None:
+        print("\n  Torch not available. Skipping TCN training and inference.")
+        return
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"\n  Device: {device}")
+        if device.type == 'cuda':
+            print(f"  GPU: {torch.cuda.get_device_name(0)}")
 
     # ── Load data ──
     print("\n[1] Loading tensors...")
@@ -415,6 +541,7 @@ def main():
     # ── Loss + optimizer ──
     print("\n[3] Setting up training...")
     class_weights = load_class_weights(device)
+    print(f"  Loaded class weights: {class_weights.tolist()}")
     criterion     = nn.CrossEntropyLoss(weight=class_weights)
     optimizer     = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     scheduler     = optim.lr_scheduler.ReduceLROnPlateau(

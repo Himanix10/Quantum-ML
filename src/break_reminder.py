@@ -14,9 +14,9 @@ from typing import Optional
 
 @dataclass
 class BreakReminderConfig:
-    vfq_threshold: float = 20.0
-    sustained_duration_sec: float = 5.0
-    cooldown_sec: float = 5.0
+    vfq_threshold: float = 40.0
+    sustained_duration_sec: float = 300.0
+    cooldown_sec: float = 600.0
     check_interval_sec: float = 5.0
 
 

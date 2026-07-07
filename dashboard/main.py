@@ -466,6 +466,8 @@ class RecoveryPopup(QDialog):
             Qt.WindowType.Dialog |
             Qt.WindowType.FramelessWindowHint
         )
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setModal(True)
         self.setFixedWidth(400)
         self.setStyleSheet(f"""
             QDialog {{ background:{T['surface']}; border:1px solid {T['border']}; border-radius:16px; }}
@@ -552,6 +554,8 @@ class InterventionScreen(QDialog):
             Qt.WindowType.Dialog |
             Qt.WindowType.FramelessWindowHint
         )
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setModal(True)
         self.setFixedWidth(440)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setWindowOpacity(0.0)
@@ -3032,6 +3036,7 @@ class Dashboard(QMainWindow):
         result = popup.exec()
         self._popup_showing = False  # popup closed — allow reminders again
 
+        print(f"[Dashboard] Break popup result={result} selected={popup.get_selected_action()}")
         if result == QDialog.DialogCode.Accepted:
             action = popup.get_selected_action()
             if not action:

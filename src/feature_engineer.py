@@ -14,7 +14,8 @@ Run AFTER data_preprocessor.py:
 import pandas as pd
 import numpy as np
 import os
-
+from quantum_feature_fusion import QuantumFeatureFusion
+from config import USE_QUANTUM
 # ── CONFIG ───────────────────────────────────────────────────────────────────
 PROCESSED_DIR = os.path.join(os.path.dirname(__file__), '..', 'data', 'processed')
 TRAIN_IN      = os.path.join(PROCESSED_DIR, 'train.csv')
@@ -164,6 +165,35 @@ def engineer_features(df: pd.DataFrame, split_name: str) -> pd.DataFrame:
             else:
                 session_df['strain_trend_enc'] = session_df['strain_trend']
 
+        if USE_QUANTUM:
+            # ── 12. Quantum Feature Fusion ──
+            print(f"    Computing quantum feature fusion for session {session_id} ({n} rows)...")
+            qff = QuantumFeatureFusion()
+            
+            ears = session_df['ear'].values
+            blinks = session_df['blink_rate'].values
+            gazes = session_df['gaze_deviation'].values
+            heads = session_df['head_pitch'].values
+            
+            q0_list, q1_list, q2_list, q3_list = [], [], [], []
+            for i in range(n):
+                inputs = {
+                    'EAR': float(ears[i]),
+                    'blink_rate': float(blinks[i]),
+                    'gaze_deviation': float(gazes[i]),
+                    'head_pose': float(heads[i])
+                }
+                res = qff.encode(inputs)
+                q0_list.append(res['quantum_feature_0'])
+                q1_list.append(res['quantum_feature_1'])
+                q2_list.append(res['quantum_feature_2'])
+                q3_list.append(res['quantum_feature_3'])
+                
+            session_df['quantum_feature_0'] = q0_list
+            session_df['quantum_feature_1'] = q1_list
+            session_df['quantum_feature_2'] = q2_list
+            session_df['quantum_feature_3'] = q3_list
+
         all_sessions.append(session_df)
 
     result = pd.concat(all_sessions, ignore_index=True)
@@ -233,8 +263,8 @@ def main():
     os.makedirs(PROCESSED_DIR, exist_ok=True)
     train_eng.to_csv(TRAIN_OUT, index=False)
     test_eng.to_csv(TEST_OUT,   index=False)
-    print(f"  Saved → {TRAIN_OUT}")
-    print(f"  Saved → {TEST_OUT}")
+    print(f"  Saved -> {TRAIN_OUT}")
+    print(f"  Saved -> {TEST_OUT}")
     print(f"  Train columns: {len(train_eng.columns)}")
     print(f"  Test  columns: {len(test_eng.columns)}")
 

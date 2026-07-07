@@ -23,7 +23,9 @@ class SessionManager:
         'ear_roll_mean', 'ear_roll_std',
         'blink_rate_roll_mean', 'blink_rate_roll_std',
         'gaze_deviation_roll_mean', 'fatigue_progression',
-        'ear_trend'
+        'ear_trend',
+        'quantum_feature_0', 'quantum_feature_1',
+        'quantum_feature_2', 'quantum_feature_3'
     ]
 
     def __init__(self, user_id="user_001", profile_dir=None):
@@ -219,16 +221,31 @@ class SessionManager:
             "strain_events":  0
         }
 
+        # Check if test mode is active before creating new BreakReminderSystem
+        is_test_mode = (hasattr(self, 'break_reminder') and 
+                        self.break_reminder.config.vfq_threshold == 20.0 and
+                        self.break_reminder.config.sustained_duration_sec == 5.0)
+
         self.break_reminder = BreakReminderSystem()
-        # Force production defaults — break_reminder.py may have testing values
-        self.break_reminder.config.vfq_threshold          = 40.0
-        self.break_reminder.config.sustained_duration_sec = 300.0
-        self.break_reminder.config.cooldown_sec           = 600.0
+        
+        if not is_test_mode:
+            # Force production defaults — break_reminder.py may have testing values
+            self.break_reminder.config.vfq_threshold          = 40.0
+            self.break_reminder.config.sustained_duration_sec = 300.0
+            self.break_reminder.config.cooldown_sec           = 600.0
+        else:
+            # Preserve test mode settings across session restart
+            self.break_reminder.config.vfq_threshold          = 20.0
+            self.break_reminder.config.sustained_duration_sec = 5.0
+            self.break_reminder.config.cooldown_sec           = 5.0
+            print("[SessionManager] Test mode preserved during session start")
+        
         self.break_reminder.config.check_interval_sec     = 5.0
         self.break_reminder.start()
 
-        # Re-apply personal threshold each session (overrides the 40 above if baseline exists)
-        self._apply_personal_threshold()
+        # Re-apply personal threshold each session (overrides the defaults above if baseline exists, unless test mode)
+        if not is_test_mode:
+            self._apply_personal_threshold()
         # Update personal gauge in LiveScreen
         if self.dashboard is not None:
             pt = self.profile.get('baseline', {}).get('personal_vfq_threshold')
@@ -643,6 +660,7 @@ if __name__ == "__main__":
 
     else:
         print(f"\nStarting session for {user_id}. Press Q to end.")
+        manager = SessionManager(user_id=user_id)
         manager.start_session()
         try:
             while True:
